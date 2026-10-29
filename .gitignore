@@ -1,0 +1,8 @@
+node_modules/
+dist/
+server/evaluations.json
+server/responses.json
+server/data/*.sqlite
+server/data/*.sqlite-*
+server/data/backups/
+*.tsbuildinfo
