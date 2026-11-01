@@ -28,24 +28,29 @@ The browser UI is React JavaScript. Node.js is used only by Vite to run and buil
 
 ## School demonstration setup (Windows + XAMPP)
 
+### Requirements
+
+- Windows with XAMPP, including Apache, MySQL/MariaDB, and PHP 8.1 or later.
+- PHP extensions `PDO`, `pdo_mysql`, `session`, and `json` enabled in the PHP configuration used by Apache and the CLI.
+- Node.js 20 LTS or later and npm for installing/running/building the React frontend.
+- A modern browser and an internet connection when installing npm dependencies.
+
+The PHP API has no Composer dependencies. The application does not require TypeScript, SQLite, Express.js, or a Node.js backend.
+
 ### 1. Start XAMPP
 
 Open the **XAMPP Control Panel** and start **Apache** and **MySQL**. Confirm both show as running. The app expects Apache on port 80 and MySQL on port 3306 unless you update the frontend proxy and database settings.
 
-### 2. Place the project and PHP API
+### 2. Download or clone the project
 
-Keep the complete project folder under XAMPP's web root, for example:
+Clone the repository into the expected XAMPP path from PowerShell:
 
-```text
-C:\xampp\htdocs\Evaluation System\
-  client\
-  server\
-    api\       PHP API files
-    tools\
-    database.sql
+```powershell
+git clone https://github.com/allysacairebuamartinez-a11y/Evaluation-react.git "C:\xampp\htdocs\Evaluation System"
+Set-Location "C:\xampp\htdocs\Evaluation System"
 ```
 
-The PHP backend is `server\api`; do not move only that folder out of the project. The Vite proxy is configured for the example folder name `Evaluation System`. If you rename or move the project, update `projectPath` in `client\vite.config.js` to match its Apache URL.
+You can also download the repository ZIP and extract the complete project into `C:\xampp\htdocs\Evaluation System`. Keep both `client` and `server` directories together; the PHP backend is `server\api`. The Vite proxy is configured for the Apache URL `/Evaluation%20System`. If you use another folder name, update `projectPath` in `client\vite.config.js` to match that folder's URL.
 
 ### 3. Import the MySQL database
 
@@ -65,7 +70,7 @@ The migration adds Teacher IDs, Subject Codes, Courses, Course–Subject links, 
 
 ### 4. Configure PHP's MySQL connection
 
-Open `server\api\config.php`. The defaults match a typical local XAMPP install:
+Open `server\api\config.php`. It is a safe, tracked configuration with blank-password XAMPP defaults:
 
 ```text
 host: 127.0.0.1
@@ -75,7 +80,7 @@ username: root
 password: (blank)
 ```
 
-If your MySQL account uses a password or a different database/port, update the corresponding values in `config.php`, or set the supported `OLPCSMI_DB_HOST`, `OLPCSMI_DB_PORT`, `OLPCSMI_DB_NAME`, `OLPCSMI_DB_USER`, and `OLPCSMI_DB_PASSWORD` environment variables for Apache/PHP. Ensure the XAMPP PHP installation has PDO MySQL enabled. Do not commit real database passwords.
+If your MySQL account uses a password or a different database/port, set the supported `OLPCSMI_DB_HOST`, `OLPCSMI_DB_PORT`, `OLPCSMI_DB_NAME`, `OLPCSMI_DB_USER`, and `OLPCSMI_DB_PASSWORD` environment variables for Apache/PHP. Do not commit real database passwords or local `.env` files.
 
 ### 5. Create the first Admin account
 
@@ -89,11 +94,18 @@ Choose a username, full name, and password of at least 12 characters. The script
 
 ### 6. Run the React frontend
 
-Install Node.js LTS if it is not already available. From PowerShell in the project root:
+Install Node.js 20 LTS or later if it is not already available. From PowerShell in the project root:
 
 ```powershell
-npm run install:all
+C:\xampp\php\php.exe -v
+npm ci --prefix client
 npm run dev
+```
+
+Confirm the PHP version is 8.1 or later and that PDO MySQL is enabled. If the `php` command is not available in PowerShell, add XAMPP PHP to the current session's PATH before running build checks:
+
+```powershell
+$env:Path = "C:\xampp\php;$env:Path"
 ```
 
 Open `http://localhost:5173`. Vite serves the React JavaScript frontend and proxies API requests to Apache/PHP. Node.js is needed for Vite only; it does not run the API or database. There is no TypeScript, SQLite, or Express.js runtime requirement.
@@ -102,7 +114,7 @@ For a production build, make sure XAMPP PHP is on `PATH`, then run `npm run buil
 
 ## Demonstration checklist by role
 
-1. **Admin:** Sign in with the account created above. Verify the dashboard totals and the Students, Deans, Teachers, Subjects & assignments, Courses, Evaluation periods, Questions & criteria, Submitted evaluations, and Evaluation results modules. Check the recovered teacher and subject catalogs. Add Courses and connect their Subjects, assign Teachers to Subjects for the correct semester and academic year, then create Student accounts and enroll each in a Course. Open an evaluation period whose dates include today.
+1. **Admin:** Sign in with the account created above. The repository intentionally contains no default passwords or pre-made login accounts. Use Admin management to create Dean and Student accounts. Verify the dashboard totals and the Students, Deans, Teachers, Subjects & assignments, Courses, Evaluation periods, Questions & criteria, Submitted evaluations, and Evaluation results modules. Check the recovered teacher and subject catalogs. Add Courses and connect their Subjects, assign Teachers to Subjects for the correct semester and academic year, then enroll each Student in a Course. Open an evaluation period whose dates include today.
 2. **Student:** Sign in with the account created by Admin. Choose an open period and an assigned teacher/subject, complete the evaluation, and confirm submission. Verify the status becomes Completed and a second submission for that teacher and period is rejected. Students can see their own status only, not answers or overall reports.
 3. **Dean:** Sign in with the account created by Admin. Verify that only Evaluation results navigation is available, the results are limited to the Dean's department, and the available actions are View Details and Print. Use the filters and test both individual and summary print actions.
 4. **Admin (final review):** Return to Admin and verify records, period status, anonymous submitted evaluations, and filtered/printable results. Admin is the only role with system-management actions.
