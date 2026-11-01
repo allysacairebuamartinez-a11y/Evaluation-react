@@ -1,353 +1,127 @@
-# 🎓 OLPC-SMI Evaluation System
+# OLPC-SMI Online Teachers Evaluation System
 
-<p align="center">
-  <img src="https://img.shields.io/badge/OLPC--SMI-Evaluation%20System-10b981?style=for-the-badge&logo=academia&logoColor=white" alt="OLPC-SMI Evaluation System"/>
-  <img src="https://img.shields.io/badge/Full--Stack-Application-0f172a?style=for-the-badge" alt="Full Stack"/>
-</p>
+The existing React interface now uses JavaScript and a PHP API backed by MySQL. The original login layout, logo, campus image, colors, fonts, and dashboards are kept.
 
-<p align="center">
-  <strong>A modern, secure, and anonymous teacher evaluation platform.</strong>
-  <br/>
-  Built to simplify academic evaluation, streamline administration, and deliver meaningful insights through data-driven reporting.
-</p>
+## Folder guide
 
-<p align="center">
-  <img src="https://img.shields.io/badge/React-Frontend-61DAFB?style=flat-square&logo=react&logoColor=black"/>
-  <img src="https://img.shields.io/badge/Express-API-000000?style=flat-square&logo=express"/>
-  <img src="https://img.shields.io/badge/TypeScript-Type%20Safe-3178C6?style=flat-square&logo=typescript&logoColor=white"/>
-  <img src="https://img.shields.io/badge/SQLite-Database-003B57?style=flat-square&logo=sqlite&logoColor=white"/>
-  <img src="https://img.shields.io/badge/Vite-Build%20Tool-646CFF?style=flat-square&logo=vite&logoColor=white"/>
-</p>
-
----
-
-## ✨ Overview
-
-The **OLPC-SMI Evaluation System** is a full-stack web application designed to modernize the teacher evaluation process at Our Lady of the Pillar College – San Manuel, Inc.
-
-The platform provides dedicated interfaces for administrators, students, and deans, with role-based permissions, structured evaluation workflows, and anonymous aggregate reporting.
-
-Built with a React and Vite frontend, an Express and TypeScript API, and a persistent SQLite database powered by `sql.js`, the system combines a responsive user experience with server-enforced business rules.
-
-## 🚀 Core Features
-
-<table>
-<tr>
-<td width="50%">
-
-### 🛡️ Secure Authentication
-- Role-based access control
-- Server-side permission enforcement
-- Protected management endpoints
-- Production account setup
-
-</td>
-<td width="50%">
-
-### 📊 Analytics Dashboard
-- Evaluation summaries
-- Aggregate performance reports
-- Department-level reporting
-- Data-driven insights
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-### 📝 Student Evaluation
-- Structured 29-question evaluation
-- Teacher and subject selection
-- Open-period validation
-- Duplicate-submission prevention
-
-</td>
-<td width="50%">
-
-### 🏛️ Administrative Management
-- Account management
-- Teacher and subject assignments
-- Evaluation period management
-- Evaluation criteria management
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-### 🔒 Anonymous Reporting
-- Aggregate evaluation results
-- Department-scoped Dean access
-- No student names in reports
-- Server-enforced access restrictions
-
-</td>
-<td width="50%">
-
-### 💾 Database & Reliability
-- Persistent SQLite storage
-- Database backup utility
-- Account initialization utility
-- Database migration support
-
-</td>
-</tr>
-</table>
-
-## 👥 System Roles
-
-| Role | Permissions |
-|:---|:---|
-| **Administrator** | Manage accounts, evaluation periods, teacher and subject assignments, criteria, and reports. |
-| **Student** | Evaluate assigned teachers and subjects during open evaluation periods. |
-| **Dean** | Review anonymous aggregate reports for the assigned department. |
-
-> [!IMPORTANT]
-> Authorization is enforced by the backend API. Restricting access to frontend pages alone is not considered sufficient security.
-
-## 🧰 Technology Stack
-
-| Technology | Purpose |
-|:---|:---|
-| React + Vite | Frontend interface and development tooling |
-| TypeScript | Type-safe application development |
-| Express.js | Backend API |
-| Node.js | Server runtime |
-| `sql.js` | SQLite database engine |
-| SQLite | Persistent application data |
-| npm | Package and script management |
-
-## 🏗️ Architecture
-
-```mermaid
-flowchart TD
-    A["👨‍🎓 Student"] --> UI["React + Vite Frontend"]
-    B["🛡️ Administrator"] --> UI
-    C["🏛️ Dean"] --> UI
-
-    UI --> API["Express + TypeScript API"]
-    API --> AUTH["Authentication & Authorization"]
-    AUTH --> LOGIC["Evaluation Business Rules"]
-    LOGIC --> DB[("SQLite Database · sql.js")]
-
-    DB --> REPORTS["Anonymous Aggregate Reports"]
-    REPORTS --> ADMIN["Admin Reports"]
-    REPORTS --> DEAN["Department Reports"]
-
-    style UI fill:#172554,stroke:#60a5fa,color:#ffffff
-    style API fill:#064e3b,stroke:#34d399,color:#ffffff
-    style DB fill:#1e293b,stroke:#94a3b8,color:#ffffff
-    style AUTH fill:#312e81,stroke:#a5b4fc,color:#ffffff
+```text
+client/
+  public/                 School logo and campus image
+  src/
+    App.jsx               Login, student, admin, dean, and report screens
+    main.jsx              React entry point
+    *.css                 Page and school theme styles
+  vite.config.js          React development/build configuration and API proxy
+  dist/                   Generated production frontend; do not edit by hand
+server/
+  api/
+    config.php            MySQL connection settings
+    index.php             PHP API, authentication, and database operations
+    .htaccess             PHP API route handling
+  tools/
+    create-admin.php      First administrator setup
+    migrate-catalog.php   Additive migration for existing MySQL installations
+  database.sql            MySQL database and starter evaluation data
 ```
 
-## ⚙️ Requirements
+The browser UI is React JavaScript. Node.js is used only by Vite to run and build that frontend; it does not run the API or access the database. Apache runs the PHP API, and PHP uses PDO to connect to MySQL. Keep the existing source files in place; `client/dist` is generated by the frontend build.
 
-- Node.js 20 or later
-- npm 10 or later
+## School demonstration setup (Windows + XAMPP)
 
-Check your installed versions:
+### 1. Start XAMPP
 
-```bash
-node --version
-npm --version
+Open the **XAMPP Control Panel** and start **Apache** and **MySQL**. Confirm both show as running. The app expects Apache on port 80 and MySQL on port 3306 unless you update the frontend proxy and database settings.
+
+### 2. Place the project and PHP API
+
+Keep the complete project folder under XAMPP's web root, for example:
+
+```text
+C:\xampp\htdocs\Evaluation System\
+  client\
+  server\
+    api\       PHP API files
+    tools\
+    database.sql
 ```
 
-## 💻 Installation & Setup
+The PHP backend is `server\api`; do not move only that folder out of the project. The Vite proxy is configured for the example folder name `Evaluation System`. If you rename or move the project, update `projectPath` in `client\vite.config.js` to match its Apache URL.
 
-### 1. Clone the repository
+### 3. Import the MySQL database
 
-```bash
-git clone <YOUR_REPOSITORY_URL>
-cd <YOUR_PROJECT_FOLDER>
+1. Open `http://localhost/phpmyadmin`.
+2. Select **Import**, choose `C:\xampp\htdocs\Evaluation System\server\database.sql`, and run the import.
+3. Confirm that the `olpcsmi_evaluation_v2` database was created and that the recovered teacher and subject catalogs are present.
+
+The SQL file creates the MySQL schema, evaluation questions and criteria, 13 recovered teachers, 22 recovered subjects, and a **closed** sample period. It does not drop existing databases. For a school machine with existing data, back it up before changing the schema.
+
+For an existing installation, do not re-import `database.sql` over live data. After backing up the configured database, run the additive migration from the project root:
+
+```powershell
+C:\xampp\php\php.exe server\tools\migrate-catalog.php
 ```
 
-Replace the placeholders with your actual GitHub repository URL and project directory.
+The migration adds Teacher IDs, Subject Codes, Courses, Course–Subject links, and the Student course link. It also creates legacy Course records from existing Student course text and connects those Students without removing or overwriting their records. It does not guess Teacher–Subject term assignments or Course–Subject mappings; an Admin must review and set those relationships.
 
-### 2. Install dependencies
+### 4. Configure PHP's MySQL connection
 
-From the project root:
+Open `server\api\config.php`. The defaults match a typical local XAMPP install:
 
-```bash
-npm install
-npm install --prefix server
-npm install --prefix client
+```text
+host: 127.0.0.1
+port: 3306
+database: olpcsmi_evaluation_v2
+username: root
+password: (blank)
 ```
 
-### 3. Start the development environment
+If your MySQL account uses a password or a different database/port, update the corresponding values in `config.php`, or set the supported `OLPCSMI_DB_HOST`, `OLPCSMI_DB_PORT`, `OLPCSMI_DB_NAME`, `OLPCSMI_DB_USER`, and `OLPCSMI_DB_PASSWORD` environment variables for Apache/PHP. Ensure the XAMPP PHP installation has PDO MySQL enabled. Do not commit real database passwords.
 
-```bash
+### 5. Create the first Admin account
+
+Open PowerShell in the project root and run:
+
+```powershell
+C:\xampp\php\php.exe server\tools\create-admin.php
+```
+
+Choose a username, full name, and password of at least 12 characters. The script creates the first Admin with PHP password hashing; no sample or default login credentials are included. After signing in, use Admin management to create Dean and Student accounts.
+
+### 6. Run the React frontend
+
+Install Node.js LTS if it is not already available. From PowerShell in the project root:
+
+```powershell
+npm run install:all
 npm run dev
 ```
 
-The application will be available at:
+Open `http://localhost:5173`. Vite serves the React JavaScript frontend and proxies API requests to Apache/PHP. Node.js is needed for Vite only; it does not run the API or database. There is no TypeScript, SQLite, or Express.js runtime requirement.
 
-| Service | URL |
-|:---|:---|
-| Frontend | `http://localhost:5173` |
-| Backend API | `http://localhost:4000` |
+For a production build, make sure XAMPP PHP is on `PATH`, then run `npm run build`. The generated frontend is in `client\dist`.
 
-> [!NOTE]
-> Development demo accounts are available only when running the application in development mode: `demo-admin`, `demo-student`, and `demo-dean`. These accounts accept any password and use in-memory sessions. They must never be used for production access.
+## Demonstration checklist by role
 
-## 🔐 Production Account Setup
+1. **Admin:** Sign in with the account created above. Verify the dashboard totals and the Students, Deans, Teachers, Subjects & assignments, Courses, Evaluation periods, Questions & criteria, Submitted evaluations, and Evaluation results modules. Check the recovered teacher and subject catalogs. Add Courses and connect their Subjects, assign Teachers to Subjects for the correct semester and academic year, then create Student accounts and enroll each in a Course. Open an evaluation period whose dates include today.
+2. **Student:** Sign in with the account created by Admin. Choose an open period and an assigned teacher/subject, complete the evaluation, and confirm submission. Verify the status becomes Completed and a second submission for that teacher and period is rejected. Students can see their own status only, not answers or overall reports.
+3. **Dean:** Sign in with the account created by Admin. Verify that only Evaluation results navigation is available, the results are limited to the Dean's department, and the available actions are View Details and Print. Use the filters and test both individual and summary print actions.
+4. **Admin (final review):** Return to Admin and verify records, period status, anonymous submitted evaluations, and filtered/printable results. Admin is the only role with system-management actions.
 
-Before starting the production server:
+The imported sample period is closed; an Admin must create/open a current period before the Student evaluation step. The legacy archive's teacher-subject links used `1st Year` / `2nd Year` labels rather than the current semester and academic-year fields, so reassign subjects in Admin using the school's correct terms. Two teacher names in the archive already contain ellipses; verify and correct them with Admin if the full names are available. The schema keeps student IDs only in a separate duplicate-prevention table; evaluation and answer rows do not contain student IDs. Legacy `.sqlite` files under `server\data`, if present from an earlier version, are archival files and are not read by this PHP/MySQL application. Leave them untouched unless their owner separately confirms they are no longer needed.
 
-**Step 1.** Start the development server once to initialize or migrate the database, then stop it.
+## Roles and privacy
 
-**Step 2.** Create production accounts using the setup utility:
+- **Admin** has separate Student, Dean, Teacher, Subject/assignment, Evaluation period, Question/criteria, Submitted evaluations, and Evaluation results modules. Admin can search and manage accounts/catalog records, open or close periods, view anonymous submissions, export CSV, and print reports.
+- **Dean** can view and print anonymous aggregate reports for the assigned department.
+- **Student** can view their enrolled Course, its Subjects, assigned Teachers, and evaluation status; complete a criteria-based evaluation during an open period; and see their own completed evaluations. Submissions require confirmation and cannot be edited; students cannot access reports or another student's submissions.
+- The database prevents a student from submitting a second evaluation for the same teacher in an evaluation period. Evaluation answers are anonymous and individual student identities are not included in reports.
 
-```bash
-npm run reset:accounts --prefix server
-```
+PHP API files are in `server/api`. The complete importable MySQL schema is `server/database.sql`; `server\tools\migrate-catalog.php` upgrades an existing MySQL installation. The PHP API uses PDO prepared statements and PHP sessions; there is no Node.js backend.
 
-Follow the prompts to create unique usernames and passwords for the Administrator, Student, and Dean roles. Assign the Dean to the appropriate department.
+## Build and checks
 
-**Step 3.** Build the application:
-
-```bash
+```powershell
 npm run build
 ```
 
-**Step 4.** Start the production API server:
-
-```bash
-npm start --prefix server
-```
-
-Production startup requires active, non-demo accounts for all three roles and a department assignment for the Dean.
-
-**Never use `npm run dev` as your production startup command.**
-
-## 💾 Database Backups
-
-Create a timestamped database backup:
-
-```bash
-npm run backup --prefix server
-```
-
-Backups are stored in `server/data/backups` by default.
-
-For better protection, schedule regular backups and keep copies on a separate drive or protected storage location.
-
-The optional `OLPCSMI_DATABASE_FILE` environment variable can be used to specify a custom database file. Use the same database path for the application, account setup utility, and backup utility.
-
-## 🧪 Evaluation Workflow
-
-```mermaid
-flowchart TD
-    A["Student Login"] --> B["Select Open Evaluation Period"]
-    B --> C["Select Assigned Teacher & Subject"]
-    C --> D["Complete 29 Required Questions"]
-    D --> E["Review Responses"]
-    E --> F["Submit Evaluation"]
-    F --> G{"Server Validation"}
-    G -->|Valid| H["Save Evaluation"]
-    G -->|Duplicate or Invalid| I["Reject Submission"]
-    H --> J["Update Anonymous Aggregate Reports"]
-
-    style A fill:#172554,stroke:#60a5fa,color:#ffffff
-    style F fill:#064e3b,stroke:#34d399,color:#ffffff
-    style H fill:#064e3b,stroke:#34d399,color:#ffffff
-    style I fill:#7f1d1d,stroke:#f87171,color:#ffffff
-```
-
-### Evaluation Rules
-
-- Only open evaluation periods are eligible for submissions.
-- Students can evaluate only assigned teacher and subject combinations.
-- All 29 questions must be answered.
-- Each student may submit only once per teacher, subject, and evaluation period.
-- Duplicate submissions are rejected by the server.
-- Reports provide anonymous aggregate results rather than named student responses.
-
-## ✅ Testing Checklist
-
-Before conducting an actual evaluation, verify the following:
-
-- [ ] An open evaluation period is selectable.
-- [ ] Assigned teachers and subjects appear correctly.
-- [ ] All 29 questions are required.
-- [ ] A complete evaluation is accepted.
-- [ ] Duplicate submissions are rejected.
-- [ ] Reports display anonymous aggregate results.
-- [ ] Dean access is limited to the assigned department.
-- [ ] Database changes persist after a server restart.
-- [ ] A recent backup exists before opening an evaluation period.
-- [ ] Production refuses incomplete account setup.
-
-Use a separate local test database and demo accounts for testing. Never use real student information for test submissions.
-
-## 🔒 Security & Privacy
-
-The system is designed around the following principles:
-
-- Backend-enforced role permissions.
-- Server-side validation of evaluation rules.
-- Production authentication separated from development demo logins.
-- Anonymous aggregate reporting.
-- Department-scoped Dean access.
-- Controlled account initialization.
-- Database backup and recovery support.
-
-Production deployment should also use HTTPS, appropriate security headers, protected environment variables, and a properly configured hosting environment.
-
-## 🗺️ Roadmap
-
-Potential future improvements:
-
-- [ ] Animated and interactive dashboards
-- [ ] Smooth page transitions and micro-interactions
-- [ ] Advanced evaluation analytics
-- [ ] Exportable aggregate reports
-- [ ] Improved mobile navigation
-- [ ] Dark and light themes
-- [ ] Automated backup scheduling
-- [ ] Expanded automated test coverage
-- [ ] Accessibility improvements
-
-*Roadmap items are planned enhancements, not claims that the features are already implemented.*
-
-## 📁 Project Structure
-
-```text
-OLPC-SMI-Evaluation-System/
-├── client/
-│   ├── src/
-│   ├── public/
-│   └── package.json
-├── server/
-│   ├── src/
-│   ├── data/
-│   │   └── backups/
-│   └── package.json
-├── package.json
-└── README.md
-```
-
-*The structure above is illustrative. Adjust it to match the actual repository.*
-
-## 🤝 Contributing
-
-Contributions and improvements are welcome.
-
-1. Fork the repository.
-2. Create a feature branch.
-3. Make your changes.
-4. Test the affected functionality.
-5. Submit a pull request with a clear description.
-
-## 📄 License
-
-Add the appropriate license information before distributing the project publicly.
-
----
-
-<p align="center">
-  <strong>OLPC-SMI Evaluation System</strong>
-  <br/>
-  <sub>Modernizing academic evaluation through technology, privacy, and meaningful insights.</sub>
-  <br/><br/>
-  Built with React, TypeScript, Express, and SQLite.
-</p>
+This checks PHP syntax and creates the React production build under `client/dist`.

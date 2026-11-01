@@ -520,6 +520,22 @@ body {
   margin: 0 0 19px;
 }
 
+.admin-summary-cards {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.admin-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.admin-quick-actions button {
+  min-height: 38px;
+  padding: 0.65rem 0.9rem;
+  font-size: 0.72rem;
+}
+
 .summary-cards > div {
   position: relative;
   min-width: 0;
@@ -568,6 +584,29 @@ body {
   border-color: #dfe7ed;
   border-radius: 8px;
   box-shadow: 0 5px 18px rgba(23, 48, 77, 0.045);
+}
+
+.student-dashboard {
+  display: grid;
+  gap: 14px;
+}
+
+.student-dashboard .dashboard-panel {
+  margin-bottom: 0;
+}
+
+.question-criterion {
+  display: grid;
+  gap: 11px;
+}
+
+.question-criterion > h3 {
+  margin: 0;
+  padding: 9px 12px;
+  border-left: 3px solid #d7a52d;
+  background: #f5f8fa;
+  color: #17304d;
+  font-size: 0.88rem;
 }
 
 .dashboard-panel h2 {
@@ -668,6 +707,10 @@ body {
   grid-template-columns: minmax(260px, 0.78fr) minmax(0, 1.22fr);
   align-items: start;
   gap: 16px;
+}
+
+.teacher-catalog-panel {
+  grid-column: 1 / -1;
 }
 
 .management-table-heading {
@@ -1021,6 +1064,10 @@ a:focus-visible {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .admin-summary-cards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .report-filters {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1126,6 +1173,10 @@ a:focus-visible {
     gap: 8px;
   }
 
+  .admin-summary-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .summary-cards > div {
     padding: 13px 12px;
   }
@@ -1142,11 +1193,26 @@ a:focus-visible {
 }
 
 @media print {
+  @page {
+    margin: 14mm;
+  }
+
+  body,
+  .flow-shell {
+    background: #fff !important;
+    color: #202c36 !important;
+  }
+
   .flow-topbar,
   .workspace-nav,
   .export-actions,
   .report-filters,
+  .toast,
   .flow-topbar .logout {
+    display: none !important;
+  }
+
+  .dashboard-content:has(.individual-report) > :not(.individual-report) {
     display: none !important;
   }
 
@@ -1160,11 +1226,21 @@ a:focus-visible {
     padding: 0;
   }
 
+  .dashboard-title {
+    border-bottom: 1px solid #dfe7ed;
+    padding-bottom: 12px;
+  }
+
   .dashboard-panel,
   .summary-cards > div,
   .chart-card {
     break-inside: avoid;
     box-shadow: none;
+  }
+
+  .report-table th:last-child,
+  .report-table td:last-child {
+    display: none;
   }
 
   .table-wrap {
