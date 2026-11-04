@@ -110,13 +110,17 @@ $env:Path = "C:\xampp\php;$env:Path"
 
 Open `http://localhost:5173`. Vite serves the React JavaScript frontend and proxies API requests to Apache/PHP. Node.js is needed for Vite only; it does not run the API or database. There is no TypeScript, SQLite, or Express.js runtime requirement.
 
+Vite development uses the PHP/MySQL API by default. To enable the temporary in-memory demo, set `VITE_DEMO_MODE=true` in `client\.env.local` and restart Vite. Choose Admin, Dean, or Student and sign in with any values. Demo mode skips database authentication and uses sample data; changes are discarded on reload and no demo request reaches PHP or MySQL. The top bar displays **DEMO MODE** while active.
+
+To turn demo mode off, remove the setting or set `VITE_DEMO_MODE=false`. Production builds always use the normal database-backed login, regardless of this setting.
+
 For a production build, make sure XAMPP PHP is on `PATH`, then run `npm run build`. The generated frontend is in `client\dist`.
 
 ## Demonstration checklist by role
 
-1. **Admin:** Sign in with the account created above. The repository intentionally contains no default passwords or pre-made login accounts. Use Admin management to create Dean and Student accounts. Verify the dashboard totals and the Students, Deans, Teachers, Subjects & assignments, Courses, Evaluation periods, Questions & criteria, Submitted evaluations, and Evaluation results modules. Check the recovered teacher and subject catalogs. Add Courses and connect their Subjects, assign Teachers to Subjects for the correct semester and academic year, then enroll each Student in a Course. Open an evaluation period whose dates include today.
+1. **Admin:** Sign in with the account created above. The repository intentionally contains no default passwords or pre-made login accounts. Use Admin management to create Dean and Student accounts. Verify the dashboard totals and the Students, Deans, Teachers, Subjects & assignments, Courses, Departments, Evaluation periods, Questions & criteria, Submitted evaluations, and Evaluation results modules. Add departments and courses independently; course enrollment is optional. Assign subjects directly to students or connect subjects to a course, assign teachers to subjects for the selected semester and academic year, and open an evaluation period whose dates include today.
 2. **Student:** Sign in with the account created by Admin. Choose an open period and an assigned teacher/subject, complete the evaluation, and confirm submission. Verify the status becomes Completed and a second submission for that teacher and period is rejected. Students can see their own status only, not answers or overall reports.
-3. **Dean:** Sign in with the account created by Admin. Verify that only Evaluation results navigation is available, the results are limited to the Dean's department, and the available actions are View Details and Print. Use the filters and test both individual and summary print actions.
+3. **Dean:** Sign in with the account created by Admin; no department assignment is needed for a Dean account. Verify that only Evaluation results navigation is available, results cover all departments, and the available actions are View Details and Print. Use the filters and test both individual and summary print actions.
 4. **Admin (final review):** Return to Admin and verify records, period status, anonymous submitted evaluations, and filtered/printable results. Admin is the only role with system-management actions.
 
 The imported sample period is closed; an Admin must create/open a current period before the Student evaluation step. The legacy archive's teacher-subject links used `1st Year` / `2nd Year` labels rather than the current semester and academic-year fields, so reassign subjects in Admin using the school's correct terms. Two teacher names in the archive already contain ellipses; verify and correct them with Admin if the full names are available. The schema keeps student IDs only in a separate duplicate-prevention table; evaluation and answer rows do not contain student IDs. Legacy `.sqlite` files under `server\data`, if present from an earlier version, are archival files and are not read by this PHP/MySQL application. Leave them untouched unless their owner separately confirms they are no longer needed.
@@ -124,7 +128,7 @@ The imported sample period is closed; an Admin must create/open a current period
 ## Roles and privacy
 
 - **Admin** has separate Student, Dean, Teacher, Subject/assignment, Evaluation period, Question/criteria, Submitted evaluations, and Evaluation results modules. Admin can search and manage accounts/catalog records, open or close periods, view anonymous submissions, export CSV, and print reports.
-- **Dean** can view and print anonymous aggregate reports for the assigned department.
+- **Dean** can view and print anonymous aggregate reports across all departments, with an optional department filter.
 - **Student** can view their enrolled Course, its Subjects, assigned Teachers, and evaluation status; complete a criteria-based evaluation during an open period; and see their own completed evaluations. Submissions require confirmation and cannot be edited; students cannot access reports or another student's submissions.
 - The database prevents a student from submitting a second evaluation for the same teacher in an evaluation period. Evaluation answers are anonymous and individual student identities are not included in reports.
 

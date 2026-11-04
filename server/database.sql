@@ -9,6 +9,13 @@ CREATE DATABASE IF NOT EXISTS olpcsmi_evaluation_v2
 USE olpcsmi_evaluation_v2;
 SET NAMES utf8mb4;
 
+CREATE TABLE IF NOT EXISTS departments (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name VARCHAR(120) NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_departments_name (name)
+) ENGINE=InnoDB;
+
 -- Every account has a PHP password_hash() value, never a plain-text password.
 CREATE TABLE IF NOT EXISTS users (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -17,21 +24,29 @@ CREATE TABLE IF NOT EXISTS users (
   role ENUM('admin', 'student', 'dean') NOT NULL,
   display_name VARCHAR(120) NOT NULL,
   department VARCHAR(120) NOT NULL DEFAULT '',
+  department_id INT UNSIGNED NULL,
   active TINYINT(1) NOT NULL DEFAULT 1,
   failed_attempts INT UNSIGNED NOT NULL DEFAULT 0,
   locked_until DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_users_username (username)
+  UNIQUE KEY uq_users_username (username),
+  KEY idx_users_department (department_id),
+  CONSTRAINT fk_users_department
+    FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS courses (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT,
   course_code VARCHAR(32) NOT NULL,
   course_name VARCHAR(160) NOT NULL,
+  department_id INT UNSIGNED NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_courses_code (course_code),
-  UNIQUE KEY uq_courses_name (course_name)
+  UNIQUE KEY uq_courses_name (course_name),
+  KEY idx_courses_department (department_id),
+  CONSTRAINT fk_courses_department
+    FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS students (
@@ -62,11 +77,15 @@ CREATE TABLE IF NOT EXISTS teachers (
   teacher_code VARCHAR(64) NOT NULL,
   name VARCHAR(120) NOT NULL,
   department VARCHAR(120) NOT NULL DEFAULT '',
+  department_id INT UNSIGNED NULL,
   user_id INT UNSIGNED NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_teachers_code (teacher_code),
   UNIQUE KEY uq_teachers_name (name),
   UNIQUE KEY uq_teachers_user (user_id),
+  KEY idx_teachers_department (department_id),
+  CONSTRAINT fk_teachers_department
+    FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE SET NULL,
   CONSTRAINT fk_teachers_user
     FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
@@ -76,9 +95,13 @@ CREATE TABLE IF NOT EXISTS subjects (
   subject_code VARCHAR(32) NOT NULL,
   name VARCHAR(160) NOT NULL,
   department VARCHAR(120) NOT NULL DEFAULT '',
+  department_id INT UNSIGNED NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_subjects_code (subject_code),
-  UNIQUE KEY uq_subjects_name (name)
+  UNIQUE KEY uq_subjects_name (name),
+  KEY idx_subjects_department (department_id),
+  CONSTRAINT fk_subjects_department
+    FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS teacher_subjects (
@@ -86,6 +109,7 @@ CREATE TABLE IF NOT EXISTS teacher_subjects (
   teacher_id INT UNSIGNED NOT NULL,
   subject_id INT UNSIGNED NOT NULL,
   semester VARCHAR(32) NOT NULL DEFAULT '',
+  year_level VARCHAR(32) NOT NULL DEFAULT '',
   academic_year VARCHAR(32) NOT NULL DEFAULT '',
   PRIMARY KEY (id),
   UNIQUE KEY uq_teacher_subject_term (teacher_id, subject_id, semester, academic_year),
@@ -102,6 +126,17 @@ CREATE TABLE IF NOT EXISTS course_subjects (
   CONSTRAINT fk_course_subjects_course
     FOREIGN KEY (course_id) REFERENCES courses (id) ON DELETE CASCADE,
   CONSTRAINT fk_course_subjects_subject
+    FOREIGN KEY (subject_id) REFERENCES subjects (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS student_subjects (
+  student_user_id INT UNSIGNED NOT NULL,
+  subject_id INT UNSIGNED NOT NULL,
+  PRIMARY KEY (student_user_id, subject_id),
+  KEY idx_student_subjects_subject (subject_id),
+  CONSTRAINT fk_student_subjects_student
+    FOREIGN KEY (student_user_id) REFERENCES students (user_id) ON DELETE CASCADE,
+  CONSTRAINT fk_student_subjects_subject
     FOREIGN KEY (subject_id) REFERENCES subjects (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
@@ -172,14 +207,14 @@ CREATE TABLE IF NOT EXISTS evaluations (
 ) ENGINE=InnoDB;
 
 -- This private eligibility record prevents a student from evaluating the same
--- teacher twice in one period. It deliberately has no evaluation_id, so it
+-- teacher and subject twice in one period. It deliberately has no evaluation_id, so it
 -- cannot be joined back to an individual anonymous answer or report.
 CREATE TABLE IF NOT EXISTS evaluation_duplicate_guards (
   student_user_id INT UNSIGNED NOT NULL,
   teacher_id INT UNSIGNED NOT NULL,
   subject_id INT UNSIGNED NOT NULL,
   period_id INT UNSIGNED NOT NULL,
-  PRIMARY KEY (student_user_id, teacher_id, period_id),
+  PRIMARY KEY (student_user_id, teacher_id, subject_id, period_id),
   CONSTRAINT fk_duplicate_guards_student
     FOREIGN KEY (student_user_id) REFERENCES users (id) ON DELETE RESTRICT,
   CONSTRAINT fk_duplicate_guards_teacher
@@ -209,6 +244,9 @@ CREATE TABLE IF NOT EXISTS system_settings (
 ) ENGINE=InnoDB;
 
 -- Restored catalog records from the project's legacy school catalog.
+INSERT IGNORE INTO departments (id, name)
+VALUES (1, 'College of Teacher Education');
+
 INSERT IGNORE INTO teachers (id, teacher_code, name, department) VALUES
   (1, 'T-0001', 'Mr. Jimmy Velasco', 'College of Teacher Education'),
   (5, 'T-0005', 'Ms. Marielle Ulant', 'College of Teacher Education'),
@@ -248,14 +286,39 @@ INSERT IGNORE INTO subjects (id, subject_code, name, department) VALUES
   (22, 'FIL-2', 'FIL 2 - Masining na Pagpapahayag', 'College of Teacher Education'),
   (23, 'PE-4', 'PE 4 - Sport', 'College of Teacher Education');
 
--- Teacher/subject links must be assigned in Admin with the correct semester
--- and academic year; the legacy archive stored year-level labels instead.
+UPDATE teachers t JOIN departments d ON d.name = t.department
+SET t.department_id = d.id
+WHERE t.department_id IS NULL;
 
-INSERT IGNORE INTO evaluation_periods
-  (id, name, semester, academic_year, starts_at, ends_at, status) VALUES
-  (1, 'Sample First Semester Evaluation', '1st Semester', '2026-2027',
-   DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY),
-   DATE_ADD(UTC_TIMESTAMP(), INTERVAL 30 DAY), 'closed');
+UPDATE subjects s JOIN departments d ON d.name = s.department
+SET s.department_id = d.id
+WHERE s.department_id IS NULL;
+
+-- These legacy assignments retain their year level separately. Semester and
+-- academic year remain unset rather than being guessed from the old labels.
+INSERT IGNORE INTO teacher_subjects
+  (id, teacher_id, subject_id, semester, year_level, academic_year) VALUES
+  (1, 1, 1, '', '1st Year', ''),
+  (2, 1, 4, '', '1st Year', ''),
+  (3, 5, 5, '', '1st Year', ''),
+  (4, 6, 6, '', '1st Year', ''),
+  (5, 7, 7, '', '1st Year', ''),
+  (6, 8, 8, '', '1st Year', ''),
+  (7, 9, 9, '', '1st Year', ''),
+  (8, 6, 10, '', '1st Year', ''),
+  (9, 9, 11, '', '2nd Year', ''),
+  (10, 12, 12, '', '2nd Year', ''),
+  (11, 13, 13, '', '2nd Year', ''),
+  (12, 1, 14, '', '2nd Year', ''),
+  (13, 1, 15, '', '2nd Year', ''),
+  (14, 16, 16, '', '2nd Year', ''),
+  (15, 1, 17, '', '2nd Year', ''),
+  (16, 1, 18, '', '2nd Year', ''),
+  (17, 19, 19, '', '2nd Year', ''),
+  (18, 20, 20, '', '2nd Year', ''),
+  (19, 21, 21, '', '2nd Year', ''),
+  (20, 13, 22, '', '2nd Year', ''),
+  (21, 23, 23, '', '2nd Year', '');
 
 INSERT IGNORE INTO evaluation_criteria (id, name, sort_order) VALUES
   (1, 'Teaching effectiveness', 1),

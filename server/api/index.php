@@ -60,8 +60,10 @@ try {
             return null;
         }
         $statement = $pdo->prepare(
-            'SELECT id, username, role, display_name, department, active
-             FROM users WHERE id = ? LIMIT 1'
+            'SELECT users.id, users.username, users.role, users.display_name,
+                    COALESCE(departments.name, users.department) AS department, users.active
+             FROM users LEFT JOIN departments ON departments.id = users.department_id
+             WHERE users.id = ? LIMIT 1'
         );
         $statement->execute([(int) $_SESSION['user_id']]);
         $user = $statement->fetch();
@@ -113,16 +115,25 @@ try {
         ];
     }
 
-    function valid_department(string $department): bool
+    function valid_department(PDO $pdo, string $department): bool
     {
-        return $department === '' || in_array($department, [
-            'College of Accountancy',
-            'College of Business Administration',
-            'College of Criminology',
-            'College of Hospitality Management',
-            'College of Information Technology',
-            'College of Teacher Education',
-        ], true);
+        if ($department === '') {
+            return true;
+        }
+        $statement = $pdo->prepare('SELECT 1 FROM departments WHERE name = ?');
+        $statement->execute([$department]);
+        return (bool) $statement->fetchColumn();
+    }
+
+    function department_id(PDO $pdo, string $department): ?int
+    {
+        if ($department === '') {
+            return null;
+        }
+        $statement = $pdo->prepare('SELECT id FROM departments WHERE name = ?');
+        $statement->execute([$department]);
+        $id = $statement->fetchColumn();
+        return $id === false ? null : (int) $id;
     }
 
     function iso_datetime(?string $value): string
@@ -283,18 +294,19 @@ try {
 
     function create_or_find_subject(PDO $pdo, string $name, string $department, string $subjectCode): int
     {
+        $departmentId = department_id($pdo, $department);
         $find = $pdo->prepare('SELECT id FROM subjects WHERE name = ?');
         $find->execute([$name]);
         $id = $find->fetchColumn();
         if ($id !== false) {
             if ($department !== '') {
-                $update = $pdo->prepare("UPDATE subjects SET department = ? WHERE id = ? AND department = ''");
-                $update->execute([$department, $id]);
+                $update = $pdo->prepare("UPDATE subjects SET department = ?, department_id = ? WHERE id = ? AND department = ''");
+                $update->execute([$department, $departmentId, $id]);
             }
             return (int) $id;
         }
-        $insert = $pdo->prepare('INSERT INTO subjects (subject_code, name, department) VALUES (?, ?, ?)');
-        $insert->execute([$subjectCode, $name, $department]);
+        $insert = $pdo->prepare('INSERT INTO subjects (subject_code, name, department, department_id) VALUES (?, ?, ?, ?)');
+        $insert->execute([$subjectCode, $name, $department, $departmentId]);
         return (int) $pdo->lastInsertId();
     }
 
@@ -386,32 +398,106 @@ try {
         send_json(['status' => 'signed_out']);
     }
 
+    if ($route === '/admin/departments') {
+        require_user($user, ['admin']);
+        if ($method === 'GET') {
+            send_json($pdo->query('SELECT id, name FROM departments ORDER BY name')->fetchAll());
+        }
+        if ($method === 'POST') {
+            $name = trim((string) (request_body()['name'] ?? ''));
+            if (strlen($name) < 2 || strlen($name) > 120) {
+                fail_request(400, 'Enter a department name between 2 and 120 characters.');
+            }
+            try {
+                $insert = $pdo->prepare('INSERT INTO departments (name) VALUES (?)');
+                $insert->execute([$name]);
+            } catch (PDOException $error) {
+                if (unique_conflict($error)) {
+                    fail_request(409, 'That department already exists.');
+                }
+                throw $error;
+            }
+            send_json(['status' => 'created', 'id' => (int) $pdo->lastInsertId()], 201);
+        }
+    }
+
+    if (preg_match('~^/admin/departments/(\d+)$~', $route, $match)) {
+        require_user($user, ['admin']);
+        $departmentId = (int) $match[1];
+        if ($method === 'PUT' || $method === 'PATCH') {
+            $name = trim((string) (request_body()['name'] ?? ''));
+            if (strlen($name) < 2 || strlen($name) > 120) {
+                fail_request(400, 'Enter a department name between 2 and 120 characters.');
+            }
+            try {
+                $update = $pdo->prepare('UPDATE departments SET name = ? WHERE id = ?');
+                $update->execute([$name, $departmentId]);
+            } catch (PDOException $error) {
+                if (unique_conflict($error)) {
+                    fail_request(409, 'That department already exists.');
+                }
+                throw $error;
+            }
+            if (!$update->rowCount()) {
+                $exists = $pdo->prepare('SELECT 1 FROM departments WHERE id = ?');
+                $exists->execute([$departmentId]);
+                if (!$exists->fetchColumn()) {
+                    fail_request(404, 'Department not found.');
+                }
+            }
+            send_json(['status' => 'updated']);
+        }
+        if ($method === 'DELETE') {
+            $delete = $pdo->prepare('DELETE FROM departments WHERE id = ?');
+            $delete->execute([$departmentId]);
+            if (!$delete->rowCount()) {
+                fail_request(404, 'Department not found.');
+            }
+            send_json(['status' => 'deleted']);
+        }
+    }
+
     if ($method === 'GET' && $route === '/catalog') {
         $authenticated = require_user($user);
-        $department = $authenticated['role'] === 'dean' ? $authenticated['department'] : '';
-        $teacherSql = 'SELECT id, teacher_code AS teacherCode, name, department FROM teachers';
-        $subjectSql = 'SELECT id, subject_code AS subjectCode, name, department FROM subjects';
-        $catalogValues = [];
-        if ($authenticated['role'] === 'dean') {
-            $teacherSql .= ' WHERE department = ?';
-            $subjectSql .= ' WHERE department = ?';
-            $catalogValues = [$department];
-        } elseif ($authenticated['role'] === 'student') {
-            $teacherSql .= ' WHERE EXISTS (
+        $teacherSql = 'SELECT teachers.id, teachers.teacher_code AS teacherCode, teachers.name,
+                              COALESCE(departments.name, teachers.department) AS department
+                       FROM teachers LEFT JOIN departments ON departments.id = teachers.department_id';
+        $subjectSql = 'SELECT subjects.id, subjects.subject_code AS subjectCode, subjects.name,
+                              COALESCE(departments.name, subjects.department) AS department
+                       FROM subjects LEFT JOIN departments ON departments.id = subjects.department_id';
+        $teacherValues = [];
+        $subjectValues = [];
+        if ($authenticated['role'] === 'student') {
+            $teacherSql .= " WHERE EXISTS (
                 SELECT 1 FROM teacher_subjects a
-                JOIN course_subjects cs ON cs.subject_id = a.subject_id
-                JOIN students enrollment ON enrollment.course_id = cs.course_id
-                WHERE a.teacher_id = teachers.id AND enrollment.user_id = ?
-            )';
+                WHERE a.teacher_id = teachers.id AND (
+                    EXISTS (SELECT 1 FROM student_subjects ss
+                            WHERE ss.student_user_id = ? AND ss.subject_id = a.subject_id)
+                    OR (NOT EXISTS (SELECT 1 FROM student_subjects assigned
+                                    WHERE assigned.student_user_id = ?)
+                        AND EXISTS (SELECT 1 FROM course_subjects cs
+                                    JOIN students enrollment ON enrollment.course_id = cs.course_id
+                                    WHERE cs.subject_id = a.subject_id AND enrollment.user_id = ?))
+                ) AND (a.year_level = '' OR EXISTS (
+                    SELECT 1 FROM students grade
+                    WHERE grade.user_id = ? AND grade.year_level = a.year_level
+                ))
+            )";
             $subjectSql .= ' WHERE EXISTS (
+                SELECT 1 FROM student_subjects ss
+                WHERE ss.student_user_id = ? AND ss.subject_id = subjects.id
+            ) OR (NOT EXISTS (
+                SELECT 1 FROM student_subjects assigned WHERE assigned.student_user_id = ?
+            ) AND EXISTS (
                 SELECT 1 FROM course_subjects cs
                 JOIN students enrollment ON enrollment.course_id = cs.course_id
                 WHERE cs.subject_id = subjects.id AND enrollment.user_id = ?
-            )';
-            $catalogValues = [$authenticated['id']];
+            ))';
+            $teacherValues = array_fill(0, 4, $authenticated['id']);
+            $subjectValues = array_fill(0, 3, $authenticated['id']);
         }
         $teachersQuery = $pdo->prepare($teacherSql . ' ORDER BY name');
-        $teachersQuery->execute($catalogValues);
+        $teachersQuery->execute($teacherValues);
         $teachers = $teachersQuery->fetchAll();
         foreach ($teachers as &$teacher) {
             $teacher['id'] = (int) $teacher['id'];
@@ -419,7 +505,7 @@ try {
         unset($teacher);
 
         $subjectsQuery = $pdo->prepare($subjectSql . ' ORDER BY name');
-        $subjectsQuery->execute($catalogValues);
+        $subjectsQuery->execute($subjectValues);
         $subjects = $subjectsQuery->fetchAll();
         foreach ($subjects as &$subject) {
             $subject['id'] = (int) $subject['id'];
@@ -445,20 +531,34 @@ try {
         $assignmentSql = "SELECT a.id, a.teacher_id AS teacherId, a.subject_id AS subjectId,
             t.teacher_code AS teacherCode, t.name AS teacher,
             s.subject_code AS subjectCode, s.name AS subject,
-            CASE WHEN t.department = '' THEN s.department ELSE t.department END AS department,
-            a.semester, a.academic_year AS academicYear
+            CASE WHEN COALESCE(td.name, t.department) = '' THEN COALESCE(sd.name, s.department)
+                 ELSE COALESCE(td.name, t.department) END AS department,
+            a.semester, a.year_level AS yearLevel, a.academic_year AS academicYear
             FROM teacher_subjects a
             JOIN teachers t ON t.id = a.teacher_id
-            JOIN subjects s ON s.id = a.subject_id";
+            JOIN subjects s ON s.id = a.subject_id
+            LEFT JOIN departments td ON td.id = t.department_id
+            LEFT JOIN departments sd ON sd.id = s.department_id";
         $assignmentValues = [];
-        if ($authenticated['role'] === 'dean') {
-            $assignmentSql .= " WHERE (CASE WHEN t.department = '' THEN s.department ELSE t.department END) = ?";
-            $assignmentValues[] = $department;
-        } elseif ($authenticated['role'] === 'student') {
-            $assignmentSql .= ' JOIN course_subjects cs ON cs.subject_id = s.id
-                JOIN students enrollment ON enrollment.course_id = cs.course_id
-                WHERE enrollment.user_id = ?';
-            $assignmentValues[] = $authenticated['id'];
+        if ($authenticated['role'] === 'student') {
+            $assignmentSql .= " WHERE (
+                EXISTS (SELECT 1 FROM student_subjects ss
+                        WHERE ss.student_user_id = ? AND ss.subject_id = s.id)
+                OR (NOT EXISTS (SELECT 1 FROM student_subjects assigned
+                                WHERE assigned.student_user_id = ?)
+                    AND (a.year_level = '' OR EXISTS (
+                        SELECT 1 FROM students grade
+                        WHERE grade.user_id = ? AND grade.year_level = a.year_level
+                    ))
+                    AND EXISTS (SELECT 1 FROM course_subjects cs
+                                JOIN students enrollment ON enrollment.course_id = cs.course_id
+                                WHERE enrollment.user_id = ? AND cs.subject_id = s.id))
+                OR (NOT EXISTS (SELECT 1 FROM student_subjects assigned
+                                WHERE assigned.student_user_id = ?)
+                    AND EXISTS (SELECT 1 FROM students unassigned
+                                WHERE unassigned.user_id = ? AND unassigned.course_id IS NULL))
+            )";
+            $assignmentValues = array_fill(0, 6, $authenticated['id']);
         }
         $assignmentSql .= ' ORDER BY t.name, s.name';
         $assignmentQuery = $pdo->prepare($assignmentSql);
@@ -475,8 +575,10 @@ try {
         $courseSubjects = [];
         if ($authenticated['role'] === 'admin') {
             $courses = $pdo->query(
-                'SELECT id, course_code AS courseCode, course_name AS courseName
-                 FROM courses ORDER BY course_name'
+                'SELECT c.id, c.course_code AS courseCode, c.course_name AS courseName,
+                        c.department_id AS departmentId, d.name AS department
+                 FROM courses c LEFT JOIN departments d ON d.id = c.department_id
+                 ORDER BY c.course_name'
             )->fetchAll();
             foreach ($courses as &$course) {
                 $course['id'] = (int) $course['id'];
@@ -503,12 +605,11 @@ try {
         }
         unset($period);
 
-        $departments = $authenticated['role'] === 'dean'
-            ? ($department === '' ? [] : [$department])
-            : $pdo->query(
-                "SELECT department FROM teachers WHERE department <> ''
-                 UNION SELECT department FROM subjects WHERE department <> '' ORDER BY department"
-            )->fetchAll(PDO::FETCH_COLUMN);
+        $departments = $pdo->query('SELECT id, name FROM departments ORDER BY name')->fetchAll();
+        foreach ($departments as &$departmentRecord) {
+            $departmentRecord['id'] = (int) $departmentRecord['id'];
+        }
+        unset($departmentRecord);
         send_json([
             'teachers' => $teachers,
             'subjects' => $subjects,
@@ -516,6 +617,7 @@ try {
             'courses' => $courses,
             'courseSubjects' => $courseSubjects,
             'studentCourse' => $studentCourse,
+            'studentDepartment' => $authenticated['role'] === 'student' ? $authenticated['department'] : '',
             'periods' => $periods,
             'departments' => $departments,
         ]);
@@ -577,16 +679,34 @@ try {
 
         $assignmentQuery = $pdo->prepare(
             "SELECT t.id AS teacher_id, t.name AS teacher, s.id AS subject_id, s.name AS subject,
-                    CASE WHEN t.department = '' THEN s.department ELSE t.department END AS department,
+                    CASE WHEN COALESCE(td.name, t.department) = '' THEN COALESCE(sd.name, s.department)
+                         ELSE COALESCE(td.name, t.department) END AS department,
                     a.semester, a.academic_year
              FROM teacher_subjects a
              JOIN teachers t ON t.id = a.teacher_id
              JOIN subjects s ON s.id = a.subject_id
-             JOIN students enrollment ON enrollment.user_id = ?
-             JOIN course_subjects cs ON cs.course_id = enrollment.course_id AND cs.subject_id = s.id
-             WHERE t.name = ? AND s.name = ? LIMIT 1"
+             LEFT JOIN departments td ON td.id = t.department_id
+             LEFT JOIN departments sd ON sd.id = s.department_id
+             WHERE t.name = ? AND s.name = ? AND (
+                 EXISTS (SELECT 1 FROM student_subjects ss
+                         WHERE ss.student_user_id = ? AND ss.subject_id = s.id)
+                 OR (NOT EXISTS (SELECT 1 FROM student_subjects assigned
+                                 WHERE assigned.student_user_id = ?)
+                     AND (a.year_level = '' OR EXISTS (
+                         SELECT 1 FROM students grade
+                         WHERE grade.user_id = ? AND grade.year_level = a.year_level
+                     ))
+                     AND EXISTS (SELECT 1 FROM course_subjects cs
+                                 JOIN students enrollment ON enrollment.course_id = cs.course_id
+                                 WHERE enrollment.user_id = ? AND cs.subject_id = s.id))
+                 OR (NOT EXISTS (SELECT 1 FROM student_subjects assigned
+                                 WHERE assigned.student_user_id = ?)
+                     AND EXISTS (SELECT 1 FROM students unassigned
+                                 WHERE unassigned.user_id = ? AND unassigned.course_id IS NULL))
+             )
+             ORDER BY a.id LIMIT 1"
         );
-        $assignmentQuery->execute([$student['id'], $teacherName, $subjectName]);
+        $assignmentQuery->execute([$teacherName, $subjectName, $student['id'], $student['id'], $student['id'], $student['id'], $student['id'], $student['id']]);
         $assignment = $assignmentQuery->fetch();
         if (!$assignment) {
             fail_request(400, 'That teacher and subject are not in the active evaluation catalog.');
@@ -630,7 +750,7 @@ try {
                 $pdo->rollBack();
             }
             if (unique_conflict($error)) {
-                fail_request(409, 'You have already evaluated this teacher for this period.');
+                fail_request(409, 'You have already evaluated this teacher and subject for this period.');
             }
             throw $error;
         }
@@ -638,11 +758,8 @@ try {
     }
 
     if ($method === 'GET' && $route === '/reports/filters') {
-        $reportUser = require_user($user, ['admin', 'dean']);
-        if ($reportUser['role'] === 'dean' && $reportUser['department'] === '') {
-            send_json(['teacher' => [], 'subject' => [], 'department' => [], 'period' => [], 'semester' => [], 'academicYear' => []]);
-        }
-        $reports = evaluation_reports($pdo, $reportUser['role'] === 'dean' ? ['department' => $reportUser['department']] : []);
+        require_user($user, ['admin', 'dean']);
+        $reports = evaluation_reports($pdo, []);
         $filters = ['teacher' => [], 'subject' => [], 'department' => [], 'period' => [], 'semester' => [], 'academicYear' => []];
         foreach ($reports as $report) {
             foreach (['teacher', 'subject', 'department', 'period', 'semester', 'academicYear'] as $field) {
@@ -665,9 +782,6 @@ try {
             if (isset($_GET[$filter]) && $_GET[$filter] !== '') {
                 $filters[$filter] = (string) $_GET[$filter];
             }
-        }
-        if ($reportUser['role'] === 'dean') {
-            $filters['department'] = $reportUser['department'] ?: "\0";
         }
         send_json(evaluation_reports($pdo, $filters));
     }
@@ -702,11 +816,10 @@ try {
 
     if ($method === 'POST' && $route === '/reports/submit') {
         $reportUser = require_user($user, ['admin', 'dean']);
-        $department = $reportUser['role'] === 'dean' ? ($reportUser['department'] ?: "\0") : '';
         send_json([
             'status' => 'submitted',
             'submitted_at' => gmdate('Y-m-d\TH:i:s\Z'),
-            'reports' => evaluation_reports($pdo, $department === '' ? [] : ['department' => $department]),
+            'reports' => evaluation_reports($pdo, []),
             'submitted_by' => $reportUser['displayName'],
         ]);
     }
@@ -816,18 +929,27 @@ try {
     if ($method === 'GET' && $route === '/admin/users') {
         require_user($user, ['admin']);
         $statement = $pdo->query(
-            "SELECT u.id, u.username, u.role, u.display_name, u.department, u.active, u.created_at,
+            "SELECT u.id, u.username, u.role, u.display_name,
+                    COALESCE(d.name, u.department) AS department, u.active, u.created_at,
                     s.student_number, s.course_id, COALESCE(c.course_name, s.course) AS course,
-                    c.course_code AS course_code, s.year_level
+                    c.course_code AS course_code, s.year_level, d.id AS department_id
              FROM users u
              LEFT JOIN students s ON s.user_id = u.id
              LEFT JOIN courses c ON c.id = s.course_id
+             LEFT JOIN departments d ON d.id = u.department_id
              ORDER BY u.role, u.display_name"
         );
         $accounts = $statement->fetchAll();
+        $studentSubjects = $pdo->query('SELECT student_user_id, subject_id FROM student_subjects')->fetchAll();
+        $subjectsByStudent = [];
+        foreach ($studentSubjects as $studentSubject) {
+            $subjectsByStudent[(int) $studentSubject['student_user_id']][] = (int) $studentSubject['subject_id'];
+        }
         foreach ($accounts as &$account) {
             $account['id'] = (int) $account['id'];
             $account['active'] = (int) $account['active'];
+            $account['department_id'] = $account['department_id'] === null ? null : (int) $account['department_id'];
+            $account['subject_ids'] = $subjectsByStudent[$account['id']] ?? [];
         }
         unset($account);
         send_json($accounts);
@@ -840,15 +962,29 @@ try {
         $password = (string) ($body['password'] ?? '');
         $role = (string) ($body['role'] ?? '');
         $displayName = trim((string) ($body['displayName'] ?? ''));
-        $department = trim((string) ($body['department'] ?? ''));
+        $department = $role === 'dean' ? '' : trim((string) ($body['department'] ?? ''));
         $studentNumber = trim((string) ($body['studentNumber'] ?? ''));
-        $courseId = filter_var($body['courseId'] ?? null, FILTER_VALIDATE_INT);
+        $courseValue = $body['courseId'] ?? null;
+        $courseId = $courseValue === null || $courseValue === '' ? null : filter_var($courseValue, FILTER_VALIDATE_INT);
         $yearLevel = trim((string) ($body['yearLevel'] ?? ''));
-        if (!preg_match('/^[a-zA-Z0-9._-]{3,64}$/', $username) || strlen($password) < 12 || strlen($password) > 256 || !in_array($role, ['admin', 'dean', 'student'], true) || strlen($displayName) < 2 || strlen($displayName) > 120 || !valid_department($department) || ($role === 'dean' && $department === '') || ($role === 'student' && (strlen($studentNumber) < 1 || strlen($studentNumber) > 64 || !$courseId || strlen($yearLevel) > 32))) {
-            fail_request(400, 'Provide a valid username, password (at least 12 characters), role, display name, and department.');
+        $subjectIds = $body['subjectIds'] ?? [];
+        if (!is_array($subjectIds)) {
+            fail_request(400, 'Choose a valid list of student subjects.');
+        }
+        $normalizedSubjectIds = [];
+        foreach ($subjectIds as $subjectId) {
+            $id = filter_var($subjectId, FILTER_VALIDATE_INT);
+            if ($id === false || $id < 1 || isset($normalizedSubjectIds[$id])) {
+                fail_request(400, 'Choose valid subjects for this student.');
+            }
+            $normalizedSubjectIds[$id] = $id;
+        }
+        $subjectIds = array_values($normalizedSubjectIds);
+        if (!preg_match('/^[a-zA-Z0-9._-]{3,64}$/', $username) || strlen($password) < 12 || strlen($password) > 256 || !in_array($role, ['admin', 'dean', 'student'], true) || strlen($displayName) < 2 || strlen($displayName) > 120 || !valid_department($pdo, $department) || ($role === 'student' && (strlen($studentNumber) < 1 || strlen($studentNumber) > 64 || ($courseId !== null && $courseId === false) || strlen($yearLevel) > 32))) {
+            fail_request(400, 'Provide a valid username, password (at least 12 characters), role, and display name.');
         }
         $courseName = '';
-        if ($role === 'student') {
+        if ($role === 'student' && $courseId !== null) {
             $courseQuery = $pdo->prepare('SELECT course_name FROM courses WHERE id = ?');
             $courseQuery->execute([$courseId]);
             $courseName = (string) ($courseQuery->fetchColumn() ?: '');
@@ -856,18 +992,34 @@ try {
                 fail_request(400, 'Choose an existing course for this student.');
             }
         }
+        if ($role !== 'student' && $subjectIds) {
+            fail_request(400, 'Subjects can only be assigned to student accounts.');
+        }
+        if ($subjectIds) {
+            $placeholders = implode(',', array_fill(0, count($subjectIds), '?'));
+            $validSubjects = $pdo->prepare("SELECT COUNT(*) FROM subjects WHERE id IN ($placeholders)");
+            $validSubjects->execute($subjectIds);
+            if ((int) $validSubjects->fetchColumn() !== count($subjectIds)) {
+                fail_request(400, 'Choose existing subjects for this student.');
+            }
+        }
+        $departmentId = department_id($pdo, $department);
         try {
             $pdo->beginTransaction();
             $statement = $pdo->prepare(
-                'INSERT INTO users (username, password_hash, role, display_name, department) VALUES (?, ?, ?, ?, ?)'
+                'INSERT INTO users (username, password_hash, role, display_name, department, department_id) VALUES (?, ?, ?, ?, ?, ?)'
             );
-            $statement->execute([$username, password_hash($password, PASSWORD_DEFAULT), $role, $displayName, $department]);
+            $statement->execute([$username, password_hash($password, PASSWORD_DEFAULT), $role, $displayName, $department, $departmentId]);
             $newUserId = (int) $pdo->lastInsertId();
             if ($role === 'student') {
                 $student = $pdo->prepare(
                     'INSERT INTO students (user_id, student_number, course, course_id, year_level) VALUES (?, ?, ?, ?, ?)'
                 );
-                $student->execute([$newUserId, $studentNumber, $courseName, $courseId, $yearLevel]);
+                $student->execute([$newUserId, $studentNumber, $courseName, $courseId ?: null, $yearLevel]);
+                $linkSubject = $pdo->prepare('INSERT INTO student_subjects (student_user_id, subject_id) VALUES (?, ?)');
+                foreach ($subjectIds as $subjectId) {
+                    $linkSubject->execute([$newUserId, $subjectId]);
+                }
             } elseif ($role === 'dean') {
                 $dean = $pdo->prepare('INSERT INTO deans (user_id, department) VALUES (?, ?)');
                 $dean->execute([$newUserId, $department]);
@@ -931,10 +1083,9 @@ try {
         if ($method === 'PUT') {
             $body = request_body();
             $displayName = trim((string) ($body['displayName'] ?? ''));
-            $department = trim((string) ($body['department'] ?? ''));
             $password = $body['password'] ?? null;
-            if (strlen($displayName) < 2 || strlen($displayName) > 120 || !valid_department($department) || ($password !== null && (!is_string($password) || strlen($password) < 12 || strlen($password) > 256))) {
-                fail_request(400, 'Provide a valid account name, department, and optional password of at least 12 characters.');
+            if (strlen($displayName) < 2 || strlen($displayName) > 120 || ($password !== null && (!is_string($password) || strlen($password) < 12 || strlen($password) > 256))) {
+                fail_request(400, 'Provide a valid account name and optional password of at least 12 characters.');
             }
             $lookup = $pdo->prepare(
                 'SELECT u.role, u.username, s.student_number, s.course, s.course_id, s.year_level
@@ -947,32 +1098,62 @@ try {
                 fail_request(404, 'Account not found.');
             }
             $role = $account['role'];
-            if ($role === 'dean' && $department === '') {
-                fail_request(400, 'A department must be assigned to a Dean account.');
+            $department = $role === 'dean' ? '' : trim((string) ($body['department'] ?? ''));
+            if (!valid_department($pdo, $department)) {
+                fail_request(400, 'Choose an existing department for this account.');
             }
             $studentNumber = trim((string) ($body['studentNumber'] ?? $account['student_number'] ?? $account['username']));
-            $courseId = filter_var($body['courseId'] ?? $account['course_id'] ?? null, FILTER_VALIDATE_INT);
+            $courseValue = array_key_exists('courseId', $body) ? $body['courseId'] : ($account['course_id'] ?? null);
+            $courseId = $courseValue === null || $courseValue === '' ? null : filter_var($courseValue, FILTER_VALIDATE_INT);
             $yearLevel = trim((string) ($body['yearLevel'] ?? $account['year_level'] ?? ''));
             $courseName = '';
             if ($role === 'student') {
-                if (strlen($studentNumber) < 1 || strlen($studentNumber) > 64 || !$courseId || strlen($yearLevel) > 32) {
-                    fail_request(400, 'Provide a valid student number, course, and year level.');
+                if (strlen($studentNumber) < 1 || strlen($studentNumber) > 64 || ($courseId !== null && $courseId === false) || strlen($yearLevel) > 32) {
+                    fail_request(400, 'Provide a valid student number, optional course, and year level.');
                 }
-                $courseQuery = $pdo->prepare('SELECT course_name FROM courses WHERE id = ?');
-                $courseQuery->execute([$courseId]);
-                $courseName = (string) ($courseQuery->fetchColumn() ?: '');
-                if ($courseName === '') {
-                    fail_request(400, 'Choose an existing course for this student.');
+                if ($courseId !== null) {
+                    $courseQuery = $pdo->prepare('SELECT course_name FROM courses WHERE id = ?');
+                    $courseQuery->execute([$courseId]);
+                    $courseName = (string) ($courseQuery->fetchColumn() ?: '');
+                    if ($courseName === '') {
+                        fail_request(400, 'Choose an existing course for this student.');
+                    }
                 }
             }
+            $subjectsProvided = array_key_exists('subjectIds', $body);
+            $subjectIds = $subjectsProvided ? $body['subjectIds'] : [];
+            if ($subjectsProvided && !is_array($subjectIds)) {
+                fail_request(400, 'Choose a valid list of student subjects.');
+            }
+            $normalizedSubjectIds = [];
+            foreach ($subjectIds as $subjectId) {
+                $id = filter_var($subjectId, FILTER_VALIDATE_INT);
+                if ($id === false || $id < 1 || isset($normalizedSubjectIds[$id])) {
+                    fail_request(400, 'Choose valid subjects for this student.');
+                }
+                $normalizedSubjectIds[$id] = $id;
+            }
+            $subjectIds = array_values($normalizedSubjectIds);
+            if ($role !== 'student' && $subjectIds) {
+                fail_request(400, 'Subjects can only be assigned to student accounts.');
+            }
+            if ($subjectIds) {
+                $placeholders = implode(',', array_fill(0, count($subjectIds), '?'));
+                $validSubjects = $pdo->prepare("SELECT COUNT(*) FROM subjects WHERE id IN ($placeholders)");
+                $validSubjects->execute($subjectIds);
+                if ((int) $validSubjects->fetchColumn() !== count($subjectIds)) {
+                    fail_request(400, 'Choose existing subjects for this student.');
+                }
+            }
+            $departmentId = department_id($pdo, $department);
             try {
                 $pdo->beginTransaction();
                 if ($password !== null && $password !== '') {
-                    $update = $pdo->prepare('UPDATE users SET display_name = ?, department = ?, password_hash = ? WHERE id = ?');
-                    $update->execute([$displayName, $department, password_hash($password, PASSWORD_DEFAULT), $accountId]);
+                    $update = $pdo->prepare('UPDATE users SET display_name = ?, department = ?, department_id = ?, password_hash = ? WHERE id = ?');
+                    $update->execute([$displayName, $department, $departmentId, password_hash($password, PASSWORD_DEFAULT), $accountId]);
                 } else {
-                    $update = $pdo->prepare('UPDATE users SET display_name = ?, department = ? WHERE id = ?');
-                    $update->execute([$displayName, $department, $accountId]);
+                    $update = $pdo->prepare('UPDATE users SET display_name = ?, department = ?, department_id = ? WHERE id = ?');
+                    $update->execute([$displayName, $department, $departmentId, $accountId]);
                 }
                 if ($role === 'student') {
                     $student = $pdo->prepare(
@@ -981,7 +1162,14 @@ try {
                                                  course = VALUES(course), course_id = VALUES(course_id),
                                                  year_level = VALUES(year_level)'
                     );
-                    $student->execute([$accountId, $studentNumber, $courseName, $courseId, $yearLevel]);
+                    $student->execute([$accountId, $studentNumber, $courseName, $courseId ?: null, $yearLevel]);
+                    if ($subjectsProvided) {
+                        $pdo->prepare('DELETE FROM student_subjects WHERE student_user_id = ?')->execute([$accountId]);
+                        $linkSubject = $pdo->prepare('INSERT INTO student_subjects (student_user_id, subject_id) VALUES (?, ?)');
+                        foreach ($subjectIds as $subjectId) {
+                            $linkSubject->execute([$accountId, $subjectId]);
+                        }
+                    }
                 } elseif ($role === 'dean') {
                     $dean = $pdo->prepare(
                         'INSERT INTO deans (user_id, department) VALUES (?, ?)
@@ -1011,18 +1199,20 @@ try {
         $body = request_body();
         $courseCode = trim((string) ($body['courseCode'] ?? ''));
         $courseName = trim((string) ($body['courseName'] ?? ''));
+        $department = trim((string) ($body['department'] ?? ''));
         $subjectIds = $body['subjectIds'] ?? [];
-        if (!preg_match('/^[A-Za-z0-9._-]{1,32}$/', $courseCode) || strlen($courseName) < 2 || strlen($courseName) > 160 || !is_array($subjectIds)) {
+        if (!preg_match('/^[A-Za-z0-9._-]{1,32}$/', $courseCode) || strlen($courseName) < 2 || strlen($courseName) > 160 || !valid_department($pdo, $department) || !is_array($subjectIds)) {
             fail_request(400, 'Provide a valid course code, course name, and subject list.');
         }
+        $departmentId = department_id($pdo, $department);
         $subjectIds = array_values(array_unique(array_filter($subjectIds, static fn($id): bool => filter_var($id, FILTER_VALIDATE_INT) !== false)));
         if (count($subjectIds) !== count($body['subjectIds'] ?? [])) {
             fail_request(400, 'Choose valid subjects for this course.');
         }
         try {
             $pdo->beginTransaction();
-            $insert = $pdo->prepare('INSERT INTO courses (course_code, course_name) VALUES (?, ?)');
-            $insert->execute([$courseCode, $courseName]);
+            $insert = $pdo->prepare('INSERT INTO courses (course_code, course_name, department_id) VALUES (?, ?, ?)');
+            $insert->execute([$courseCode, $courseName, $departmentId]);
             $courseId = (int) $pdo->lastInsertId();
             $link = $pdo->prepare('INSERT INTO course_subjects (course_id, subject_id) VALUES (?, ?)');
             foreach ($subjectIds as $subjectId) {
@@ -1051,18 +1241,20 @@ try {
             $body = request_body();
             $courseCode = trim((string) ($body['courseCode'] ?? ''));
             $courseName = trim((string) ($body['courseName'] ?? ''));
+            $department = trim((string) ($body['department'] ?? ''));
             $subjectIds = $body['subjectIds'] ?? [];
-            if (!preg_match('/^[A-Za-z0-9._-]{1,32}$/', $courseCode) || strlen($courseName) < 2 || strlen($courseName) > 160 || !is_array($subjectIds)) {
+            if (!preg_match('/^[A-Za-z0-9._-]{1,32}$/', $courseCode) || strlen($courseName) < 2 || strlen($courseName) > 160 || !valid_department($pdo, $department) || !is_array($subjectIds)) {
                 fail_request(400, 'Provide a valid course code, course name, and subject list.');
             }
+            $departmentId = department_id($pdo, $department);
             $subjectIds = array_values(array_unique(array_filter($subjectIds, static fn($id): bool => filter_var($id, FILTER_VALIDATE_INT) !== false)));
             if (count($subjectIds) !== count($body['subjectIds'] ?? [])) {
                 fail_request(400, 'Choose valid subjects for this course.');
             }
             try {
                 $pdo->beginTransaction();
-                $update = $pdo->prepare('UPDATE courses SET course_code = ?, course_name = ? WHERE id = ?');
-                $update->execute([$courseCode, $courseName, $courseId]);
+                $update = $pdo->prepare('UPDATE courses SET course_code = ?, course_name = ?, department_id = ? WHERE id = ?');
+                $update->execute([$courseCode, $courseName, $departmentId, $courseId]);
                 if (!$update->rowCount()) {
                     $exists = $pdo->prepare('SELECT id FROM courses WHERE id = ?');
                     $exists->execute([$courseId]);
@@ -1111,9 +1303,10 @@ try {
         if ($subjectCode === '') {
             $subjectCode = catalog_code($name, 'SUBJECT');
         }
-        if (!preg_match('/^[A-Za-z0-9._-]{1,32}$/', $subjectCode) || strlen($name) < 2 || strlen($name) > 160 || !valid_department($department)) {
+        if (!preg_match('/^[A-Za-z0-9._-]{1,32}$/', $subjectCode) || strlen($name) < 2 || strlen($name) > 160 || !valid_department($pdo, $department)) {
             fail_request(400, 'Provide a valid subject code, name, and department.');
         }
+        $departmentId = department_id($pdo, $department);
         $semester = (string) ($body['semester'] ?? '');
         $academicYear = trim((string) ($body['academicYear'] ?? ''));
         if (($semester !== '' && !in_array($semester, ['1st Semester', '2nd Semester', 'Summer'], true)) || strlen($academicYear) > 32) {
@@ -1131,8 +1324,8 @@ try {
         try {
             $pdo->beginTransaction();
             if ($teacherId === null) {
-                $insertSubject = $pdo->prepare('INSERT INTO subjects (subject_code, name, department) VALUES (?, ?, ?)');
-                $insertSubject->execute([$subjectCode, $name, $department]);
+                $insertSubject = $pdo->prepare('INSERT INTO subjects (subject_code, name, department, department_id) VALUES (?, ?, ?, ?)');
+                $insertSubject->execute([$subjectCode, $name, $department, $departmentId]);
                 $subjectId = (int) $pdo->lastInsertId();
             } else {
                 $subjectId = create_or_find_subject($pdo, $name, $department, $subjectCode);
@@ -1162,15 +1355,16 @@ try {
         $teacherId = filter_var($body['teacherId'] ?? null, FILTER_VALIDATE_INT);
         $subjectId = filter_var($body['subjectId'] ?? null, FILTER_VALIDATE_INT);
         $semester = (string) ($body['semester'] ?? '');
+        $yearLevel = trim((string) ($body['yearLevel'] ?? ''));
         $academicYear = trim((string) ($body['academicYear'] ?? ''));
-        if (!$teacherId || !$subjectId || !in_array($semester, ['1st Semester', '2nd Semester', 'Summer'], true) || strlen($academicYear) < 1 || strlen($academicYear) > 32) {
+        if (!$teacherId || !$subjectId || !in_array($semester, ['1st Semester', '2nd Semester', 'Summer'], true) || strlen($yearLevel) > 32 || strlen($academicYear) < 1 || strlen($academicYear) > 32) {
             fail_request(400, 'Choose a teacher, subject, semester, and valid academic year.');
         }
         try {
             $statement = $pdo->prepare(
-                'INSERT INTO teacher_subjects (teacher_id, subject_id, semester, academic_year) VALUES (?, ?, ?, ?)'
+                'INSERT INTO teacher_subjects (teacher_id, subject_id, semester, year_level, academic_year) VALUES (?, ?, ?, ?, ?)'
             );
-            $statement->execute([$teacherId, $subjectId, $semester, $academicYear]);
+            $statement->execute([$teacherId, $subjectId, $semester, $yearLevel, $academicYear]);
         } catch (PDOException $error) {
             if (unique_conflict($error)) {
                 fail_request(409, 'That teacher is already assigned to this subject for the selected term.');
@@ -1191,17 +1385,18 @@ try {
             $teacherId = filter_var($body['teacherId'] ?? null, FILTER_VALIDATE_INT);
             $subjectId = filter_var($body['subjectId'] ?? null, FILTER_VALIDATE_INT);
             $semester = (string) ($body['semester'] ?? '');
+            $yearLevel = trim((string) ($body['yearLevel'] ?? ''));
             $academicYear = trim((string) ($body['academicYear'] ?? ''));
-            if (!$teacherId || !$subjectId || !in_array($semester, ['1st Semester', '2nd Semester', 'Summer'], true) || strlen($academicYear) < 1 || strlen($academicYear) > 32) {
+            if (!$teacherId || !$subjectId || ($semester !== '' && !in_array($semester, ['1st Semester', '2nd Semester', 'Summer'], true)) || strlen($yearLevel) > 32 || strlen($academicYear) > 32 || ($semester === '' && $yearLevel === '' && $academicYear === '')) {
                 fail_request(400, 'Choose a teacher, subject, semester, and valid academic year.');
             }
             try {
                 $statement = $pdo->prepare(
                     'UPDATE teacher_subjects
-                     SET teacher_id = ?, subject_id = ?, semester = ?, academic_year = ?
+                     SET teacher_id = ?, subject_id = ?, semester = ?, year_level = ?, academic_year = ?
                      WHERE id = ?'
                 );
-                $statement->execute([$teacherId, $subjectId, $semester, $academicYear, $assignmentId]);
+                $statement->execute([$teacherId, $subjectId, $semester, $yearLevel, $academicYear, $assignmentId]);
             } catch (PDOException $error) {
                 if (unique_conflict($error)) {
                     fail_request(409, 'That teacher is already assigned to this subject for the selected term.');
@@ -1241,12 +1436,13 @@ try {
             if ($subjectCode === '') {
                 $subjectCode = catalog_code($name, 'SUBJECT');
             }
-            if (!preg_match('/^[A-Za-z0-9._-]{1,32}$/', $subjectCode) || strlen($name) < 2 || strlen($name) > 160 || !valid_department($department)) {
+            if (!preg_match('/^[A-Za-z0-9._-]{1,32}$/', $subjectCode) || strlen($name) < 2 || strlen($name) > 160 || !valid_department($pdo, $department)) {
                 fail_request(400, 'Provide a valid subject code, name, and department.');
             }
+            $departmentId = department_id($pdo, $department);
             try {
-                $update = $pdo->prepare('UPDATE subjects SET subject_code = ?, name = ?, department = ? WHERE id = ?');
-                $update->execute([$subjectCode, $name, $department, $subjectId]);
+                $update = $pdo->prepare('UPDATE subjects SET subject_code = ?, name = ?, department = ?, department_id = ? WHERE id = ?');
+                $update->execute([$subjectCode, $name, $department, $departmentId, $subjectId]);
             } catch (PDOException $error) {
                 if (unique_conflict($error)) {
                     fail_request(409, 'That subject code or name is already in use.');
@@ -1281,12 +1477,13 @@ try {
         if ($teacherCode === '') {
             $teacherCode = 'T-' . strtoupper(substr(bin2hex(random_bytes(6)), 0, 10));
         }
-        if (!preg_match('/^[A-Za-z0-9._-]{1,64}$/', $teacherCode) || strlen($name) < 2 || strlen($name) > 120 || !valid_department($department)) {
+        if (!preg_match('/^[A-Za-z0-9._-]{1,64}$/', $teacherCode) || strlen($name) < 2 || strlen($name) > 120 || !valid_department($pdo, $department)) {
             fail_request(400, 'Provide a valid teacher ID, name, and department.');
         }
+        $departmentId = department_id($pdo, $department);
         try {
-            $statement = $pdo->prepare('INSERT INTO teachers (teacher_code, name, department) VALUES (?, ?, ?)');
-            $statement->execute([$teacherCode, $name, $department]);
+            $statement = $pdo->prepare('INSERT INTO teachers (teacher_code, name, department, department_id) VALUES (?, ?, ?, ?)');
+            $statement->execute([$teacherCode, $name, $department, $departmentId]);
         } catch (PDOException $error) {
             if (unique_conflict($error)) {
                 fail_request(409, 'That teacher ID or name is already in use.');
@@ -1307,12 +1504,13 @@ try {
             if ($teacherCode === '') {
                 $teacherCode = 'T-' . strtoupper(substr(bin2hex(random_bytes(6)), 0, 10));
             }
-            if (!preg_match('/^[A-Za-z0-9._-]{1,64}$/', $teacherCode) || strlen($name) < 2 || strlen($name) > 120 || !valid_department($department)) {
+            if (!preg_match('/^[A-Za-z0-9._-]{1,64}$/', $teacherCode) || strlen($name) < 2 || strlen($name) > 120 || !valid_department($pdo, $department)) {
                 fail_request(400, 'Provide a valid teacher ID, name, and department.');
             }
+            $departmentId = department_id($pdo, $department);
             try {
-                $statement = $pdo->prepare('UPDATE teachers SET teacher_code = ?, name = ?, department = ? WHERE id = ?');
-                $statement->execute([$teacherCode, $name, $department, $teacherId]);
+                $statement = $pdo->prepare('UPDATE teachers SET teacher_code = ?, name = ?, department = ?, department_id = ? WHERE id = ?');
+                $statement->execute([$teacherCode, $name, $department, $departmentId, $teacherId]);
             } catch (PDOException $error) {
                 if (unique_conflict($error)) {
                     fail_request(409, 'That teacher ID or name is already in use.');

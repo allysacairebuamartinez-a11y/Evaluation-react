@@ -1,18 +1,12 @@
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createDemoApi } from "./demo-api";
 import { BarChart3, BookOpen, CalendarDays, Check, ClipboardCheck, Download, FileText, LogIn, Printer, Search, ShieldCheck, Users } from "lucide-react";
 import "./flow.css";
 import "./flow-extra.css";
 const API = "/api";
+const DEMO_MODE = import.meta.env.DEV && import.meta.env.VITE_DEMO_MODE === "true";
 const SEMESTERS = ["1st Semester", "2nd Semester", "Summer"];
-const DEPARTMENTS = [
-  "College of Accountancy",
-  "College of Business Administration",
-  "College of Criminology",
-  "College of Hospitality Management",
-  "College of Information Technology",
-  "College of Teacher Education"
-];
 const QUESTION_DATA = [
   { id: 1, text: "Starts the class and ends the class with prayer." },
   { id: 2, text: "Course objectives were explained clearly at the beginning of the course/subject." },
@@ -86,11 +80,14 @@ function asDateTimeLocal(value) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 }
 function App() {
+  const demoApi = useRef(null);
+  if (!demoApi.current) demoApi.current = createDemoApi(QUESTION_DATA, DEFAULT_CRITERIA);
   const [step, setStep] = useState(1);
   const [loginName, setLoginName] = useState("");
   const [selectedRole, setSelectedRole] = useState("");
   const [password, setPassword] = useState("");
   const [user, setUser] = useState(null);
+  const [demoMode, setDemoMode] = useState(false);
   const [csrfToken, setCsrfToken] = useState("");
   const [authChecking, setAuthChecking] = useState(true);
   const [authError, setAuthError] = useState("");
@@ -109,6 +106,10 @@ function App() {
     window.setTimeout(() => setNotice(""), 2800);
   };
   const apiRequest = async (path, options = {}) => {
+    if (DEMO_MODE && demoMode) {
+      if (!demoApi.current) throw new Error("Demo mode is unavailable. Restart the development server and try again.");
+      return demoApi.current(path, options, user?.role);
+    }
     const headers = new Headers(options.headers);
     if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
     if (csrfToken && options.method && options.method !== "GET") headers.set("X-CSRF-Token", csrfToken);
@@ -118,6 +119,10 @@ function App() {
     return data;
   };
   useEffect(() => {
+    if (DEMO_MODE) {
+      setAuthChecking(false);
+      return () => {};
+    }
     let active = true;
     fetch(`${API}/auth/me`, { credentials: "same-origin" }).then(async (response) => {
       if (response.status === 401) return null;
@@ -166,7 +171,7 @@ function App() {
       active = false;
       window.clearInterval(timer);
     };
-  }, [user, csrfToken]);
+  }, [user, csrfToken, demoMode]);
   useEffect(() => {
     if (!user) return;
     let active = true;
@@ -182,20 +187,42 @@ function App() {
     return () => {
       active = false;
     };
-  }, [user, csrfToken]);
+  }, [user, csrfToken, demoMode]);
   const login = async (event) => {
     event.preventDefault();
     const trimmedUsername = loginName.trim();
+    if (!selectedRole) {
+      setAuthError("Select Admin, Dean, or Student.");
+      return;
+    }
+    if (DEMO_MODE) {
+      setBusy(true);
+      setAuthError("");
+      try {
+        if (!demoApi.current) demoApi.current = createDemoApi(QUESTION_DATA, DEFAULT_CRITERIA);
+        setDemoMode(true);
+        setUser({
+          id: 0,
+          username: trimmedUsername || "demo",
+          displayName: trimmedUsername || `Demo ${roles[selectedRole].label}`,
+          role: selectedRole,
+          department: selectedRole === "dean" ? "" : "College of Teacher Education"
+        });
+        setPassword("");
+        setStep(1);
+      } catch (error) {
+        setAuthError(error instanceof Error ? error.message : "Unable to start Demo Mode.");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     if (!trimmedUsername || trimmedUsername.length > 120 || trimmedUsername.length < 3) {
       setAuthError("Enter a valid username or school ID.");
       return;
     }
     if (!password || password.length > 256) {
       setAuthError("Enter your password.");
-      return;
-    }
-    if (!selectedRole) {
-      setAuthError("Select Admin, Dean, or Student.");
       return;
     }
     setBusy(true);
@@ -208,6 +235,7 @@ function App() {
       if (!data.user || !Object.hasOwn(roles, data.user.role)) {
         throw new Error("This account does not have a supported role.");
       }
+      setDemoMode(false);
       setUser(data.user);
       setCsrfToken(data.csrfToken);
       setLoginName(data.user.username);
@@ -276,12 +304,15 @@ function App() {
     }
   };
   const logout = async () => {
-    try {
-      await apiRequest("/auth/logout", { method: "POST", body: "{}" });
-    } catch (error) {
-      flash(error instanceof Error ? error.message : "Unable to sign out safely.");
-      return;
+    if (!(DEMO_MODE && demoMode)) {
+      try {
+        await apiRequest("/auth/logout", { method: "POST", body: "{}" });
+      } catch (error) {
+        flash(error instanceof Error ? error.message : "Unable to sign out safely.");
+        return;
+      }
     }
+    setDemoMode(false);
     setUser(null);
     setLoginName("");
     setSelectedRole("");
@@ -306,6 +337,7 @@ function App() {
           setSelectedRole(role);
           setAuthError("");
         },
+        demoMode: DEMO_MODE,
         password,
         setPassword,
         login,
@@ -325,7 +357,7 @@ function App() {
       ] }),
       /* @__PURE__ */ jsxs("div", { className: "live-pill", children: [
         /* @__PURE__ */ jsx("i", {}),
-        " Live data"
+        DEMO_MODE && demoMode ? " DEMO MODE" : " Live data"
       ] }),
       /* @__PURE__ */ jsxs("div", { className: "account-chip", children: [
         /* @__PURE__ */ jsx("strong", { children: user.displayName }),
@@ -334,7 +366,7 @@ function App() {
       /* @__PURE__ */ jsx("button", { className: "logout", onClick: () => void logout(), children: "Sign out" })
     ] }),
     user.role === "student" && /* @__PURE__ */ jsx(ClientFlow, { step, setStep, form, setForm, submit, catalog, submissions, questions, criteria, evaluationSubmitting }),
-    (user.role === "admin" || user.role === "dean") && /* @__PURE__ */ jsx(AdminDashboard, { role: user.role, userId: user.id, department: user.department, responses, catalog, apiRequest, refreshCatalog: async () => setCatalog(await apiRequest("/catalog")), flash, questions, setQuestions, onAccountUpdated: (displayName, department) => setUser((current) => current ? { ...current, displayName, department } : current) }),
+    (user.role === "admin" || user.role === "dean") && /* @__PURE__ */ jsx(AdminDashboard, { role: user.role, userId: user.id, responses, catalog, apiRequest, refreshCatalog: async () => setCatalog(await apiRequest("/catalog")), flash, questions, setQuestions, onAccountUpdated: (displayName, department) => setUser((current) => current ? { ...current, displayName, department } : current) }),
     notice && /* @__PURE__ */ jsxs("div", { className: "toast", children: [
       /* @__PURE__ */ jsx(Check, { size: 16 }),
       " ",
@@ -367,7 +399,7 @@ function TeacherIllustration() {
     /* @__PURE__ */ jsx("path", { d: "M226 119 243 100", stroke: "#f2bd8d", strokeWidth: "5", strokeLinecap: "round" })
   ] });
 }
-function LoginScreen({ loginName, setLoginName, selectedRole, setSelectedRole, password, setPassword, login, busy, error }) {
+function LoginScreen({ loginName, setLoginName, selectedRole, setSelectedRole, password, setPassword, login, demoMode, busy, error }) {
   return /* @__PURE__ */ jsxs("div", { className: "auth-screen", children: [
     /* @__PURE__ */ jsx("a", { className: "auth-school-logo", href: "#", "aria-label": "OLPC-SMI", children: /* @__PURE__ */ jsx(SchoolMark, { size: "large" }) }),
     /* @__PURE__ */ jsxs("div", { className: "auth-card", children: [
@@ -385,7 +417,7 @@ function LoginScreen({ loginName, setLoginName, selectedRole, setSelectedRole, p
         /* @__PURE__ */ jsx("p", { children: "Sign in with your school account." }),
         /* @__PURE__ */ jsx("div", { className: "auth-status-row", children: /* @__PURE__ */ jsxs("span", { className: "status-pill", children: [
           /* @__PURE__ */ jsx(ShieldCheck, { size: 13 }),
-          " Secure portal"
+          demoMode ? " Demo mode" : " Secure portal"
         ] }) }),
         /* @__PURE__ */ jsx("div", { className: "role-grid", "aria-label": "Choose your role", children: Object.entries(roles).map(([role, details]) => {
           const Icon = role === "admin" ? ShieldCheck : role === "student" ? BookOpen : BarChart3;
@@ -411,8 +443,8 @@ function LoginScreen({ loginName, setLoginName, selectedRole, setSelectedRole, p
             "input",
             {
               autoComplete: "username",
-              required: true,
-              maxLength: 120,
+              required: !demoMode,
+              maxLength: demoMode ? undefined : 120,
               value: loginName,
               onChange: (event) => {
                 setLoginName(event.target.value);
@@ -423,7 +455,7 @@ function LoginScreen({ loginName, setLoginName, selectedRole, setSelectedRole, p
         ] }),
         /* @__PURE__ */ jsxs("label", { children: [
           "Password",
-          /* @__PURE__ */ jsx("input", { autoComplete: "current-password", required: true, type: "password", maxLength: 256, value: password, onChange: (event) => setPassword(event.target.value), placeholder: "Enter your password" })
+          /* @__PURE__ */ jsx("input", { autoComplete: "current-password", required: !demoMode, type: "password", maxLength: demoMode ? undefined : 256, value: password, onChange: (event) => setPassword(event.target.value), placeholder: "Enter your password" })
         ] }),
         error && /* @__PURE__ */ jsx("div", { className: "auth-error", role: "alert", children: error }),
         /* @__PURE__ */ jsxs("button", { className: "primary full", disabled: busy, children: [
@@ -431,7 +463,7 @@ function LoginScreen({ loginName, setLoginName, selectedRole, setSelectedRole, p
           " ",
           busy ? "Signing in\u2026" : "Sign in"
         ] }),
-        /* @__PURE__ */ jsx("small", { className: "auth-help", children: "Your role and dashboard are determined automatically from your account." })
+        /* @__PURE__ */ jsx("small", { className: "auth-help", children: demoMode ? "Demo Mode is enabled. Choose a role; credentials are not verified." : "Your role and dashboard are determined automatically from your account." })
       ] }),
     ] })
   ] });
@@ -452,30 +484,35 @@ function getScaleForQuestion(questionId) {
 }
 function ClientFlow({ step, setStep, form, setForm, submit, catalog, submissions, questions, criteria, evaluationSubmitting }) {
   const openPeriods = catalog.periods.filter((period) => period.status === "open" && Date.parse(period.starts_at) <= Date.now() && Date.parse(period.ends_at) >= Date.now());
+  const orderedQuestions = [...questions].sort((first, second) => first.id - second.id);
   const selectedPeriod = openPeriods.find((period) => String(period.id) === form.periodId)?.name;
-  const alreadyEvaluatedTeacher = submissions.some((submission) => submission.teacher === form.teacher && (String(submission.periodId) === form.periodId || submission.period === selectedPeriod));
   const matchesPeriod = (assignment, period) => (!assignment.semester || assignment.semester === period.semester) && (!assignment.academicYear || assignment.academicYear === period.academic_year);
-  const alreadySubmitted = (teacher, period) => submissions.some((submission) => submission.teacher === teacher && (String(submission.periodId) === String(period.id) || submission.period === period.name));
+  const alreadySubmitted = (assignment, period) => submissions.some((submission) =>
+    submission.teacher === assignment.teacher &&
+    submission.subject === assignment.subject &&
+    (String(submission.periodId) === String(period.id) || submission.period === period.name)
+  );
+  const alreadyEvaluatedPair = submissions.some((submission) =>
+    submission.teacher === form.teacher && submission.subject === form.subject &&
+    (String(submission.periodId) === form.periodId || submission.period === selectedPeriod)
+  );
   const selectedEvaluationPeriod = openPeriods.find((period) => String(period.id) === form.periodId);
-  const availableAssignments = selectedEvaluationPeriod
-    ? catalog.assignments.filter((assignment) => assignment.teacher === form.teacher && matchesPeriod(assignment, selectedEvaluationPeriod) && !alreadySubmitted(assignment.teacher, selectedEvaluationPeriod))
-    : [];
+  const periodAssignments = selectedEvaluationPeriod
+    ? catalog.assignments.filter((assignment) => matchesPeriod(assignment, selectedEvaluationPeriod))
+    : catalog.assignments;
+  const availableAssignments = periodAssignments.filter((assignment) =>
+    assignment.teacher === form.teacher && (!selectedEvaluationPeriod || !alreadySubmitted(assignment, selectedEvaluationPeriod))
+  );
   const completedStatus = submissions.map((submission) => {
     const period = catalog.periods.find((item) => String(item.id) === String(submission.periodId)) || catalog.periods.find((item) => item.name === submission.period);
-    return period ? { teacher: submission.teacher, subjects: [submission.subject], period, completed: true } : null;
+    return period ? { teacher: submission.teacher, subject: submission.subject, subjects: [submission.subject], period, completed: true } : null;
   }).filter(Boolean);
   const pendingStatus = openPeriods.flatMap((period) => {
     const assignments = catalog.assignments.filter((assignment) => matchesPeriod(assignment, period));
-    const teachers = new Map();
-    assignments.forEach((assignment) => {
-      if (alreadySubmitted(assignment.teacher, period)) return;
-      const teacherAssignments = teachers.get(assignment.teacher) || [];
-      teacherAssignments.push(assignment);
-      teachers.set(assignment.teacher, teacherAssignments);
-    });
-    return [...teachers.entries()].map(([teacher, teacherAssignments]) => ({
-      teacher,
-      subjects: [...new Set(teacherAssignments.map((assignment) => assignment.subject))],
+    return assignments.filter((assignment) => !alreadySubmitted(assignment, period)).map((assignment) => ({
+      teacher: assignment.teacher,
+      subject: assignment.subject,
+      subjects: [assignment.subject],
       period,
       completed: false
     }));
@@ -492,9 +529,8 @@ function ClientFlow({ step, setStep, form, setForm, submit, catalog, submissions
       }
     });
   };
-  const periodAssignments = selectedEvaluationPeriod ? catalog.assignments.filter((assignment) => matchesPeriod(assignment, selectedEvaluationPeriod)) : [];
   const availableTeachers = [...new Set(periodAssignments
-    .filter((assignment) => !alreadySubmitted(assignment.teacher, selectedEvaluationPeriod))
+    .filter((assignment) => !selectedEvaluationPeriod || !alreadySubmitted(assignment, selectedEvaluationPeriod))
     .map((assignment) => assignment.teacher))];
   return (
     <main className="flow-content">
@@ -508,7 +544,11 @@ function ClientFlow({ step, setStep, form, setForm, submit, catalog, submissions
             <div className="panel-heading">
               <div>
                 <h2>My course and assigned classes</h2>
-                <p>{catalog.studentCourse ? `${catalog.studentCourse.code} · ${catalog.studentCourse.name}` : "No course has been assigned to your account yet. Please contact the Admin."}</p>
+                <p>
+                  Department: {catalog.studentDepartment || "Not assigned"}
+                  {" · "}
+                  Course: {catalog.studentCourse ? `${catalog.studentCourse.code} · ${catalog.studentCourse.name}` : "Not assigned"}
+                </p>
               </div>
             </div>
             {catalog.assignments.length ? (
@@ -537,9 +577,9 @@ function ClientFlow({ step, setStep, form, setForm, submit, catalog, submissions
                   <thead><tr><th>TEACHER</th><th>ASSIGNED SUBJECTS</th><th>PERIOD</th><th>STATUS</th><th>ACTION</th></tr></thead>
                   <tbody>
                     {evaluationStatus.map((item) => (
-                      <tr key={`${item.teacher}-${item.period.id}`}>
+                      <tr key={`${item.teacher}-${item.subject}-${item.period.id}`}>
                         <td>{item.teacher}</td>
-                        <td>{item.subjects.join(", ")}</td>
+                        <td>{item.subject}</td>
                         <td>{item.period.name}</td>
                         <td><span className={`status-pill ${item.completed ? "muted" : ""}`}>{item.completed ? "Completed" : "Pending"}</span></td>
                         <td>
@@ -547,7 +587,7 @@ function ClientFlow({ step, setStep, form, setForm, submit, catalog, submissions
                             <button
                               className="row-action"
                               onClick={() => {
-                                setForm({ ...form, teacher: item.teacher, subject: "", periodId: String(item.period.id), ratings: buildInitialRatings() });
+                                setForm({ ...form, teacher: item.teacher, subject: item.subject, periodId: String(item.period.id), ratings: buildInitialRatings() });
                                 setStep(2);
                               }}
                             >
@@ -572,7 +612,7 @@ function ClientFlow({ step, setStep, form, setForm, submit, catalog, submissions
               <li>For numbers 1 to 27, use the rating scale from Always to Never.</li>
               <li>For number 28, use the Strongly Agree to Strongly Disagree scale.</li>
               <li>For number 29, choose Yes or No.</li>
-              <li>Submit only once for each teacher.</li>
+              <li>Submit only once for each assigned teacher and subject in an evaluation period.</li>
             </ol>
             <button className="primary" onClick={() => {
               setForm({ ...form, teacher: "", subject: "", periodId: "", ratings: buildInitialRatings() });
@@ -609,48 +649,42 @@ function ClientFlow({ step, setStep, form, setForm, submit, catalog, submissions
             </label>
           </div>
           {openPeriods.length === 0 && <div className="empty-state" role="status">There is no open evaluation period right now. Please contact the Dean or Administrator.</div>}
-          {form.periodId && alreadyEvaluatedTeacher && <div className="empty-state" role="status">You have already evaluated this teacher for this period.</div>}
-          {form.periodId && !alreadyEvaluatedTeacher && !availableAssignments.length && <div className="empty-state" role="status">There is no active subject assignment for this teacher.</div>}
+          {form.periodId && alreadyEvaluatedPair && <div className="empty-state" role="status">You have already evaluated this teacher and subject for this period.</div>}
+          {form.periodId && !alreadyEvaluatedPair && !availableAssignments.length && <div className="empty-state" role="status">There is no active subject assignment for this teacher.</div>}
           <div className="question-list">
-            {criteria.map((criterion) => {
-              const criterionQuestions = questions.filter((question) => criterion.questionIds.includes(question.id));
-              if (!criterionQuestions.length) return null;
-              return (
-                <section className="question-criterion" key={criterion.name}>
-                  <h3>{criterion.name}</h3>
-                  {criterionQuestions.map((question) => {
-                    const scale = getScaleForQuestion(question.id);
-                    const selectedValue = form.ratings[String(question.id)];
-                    return (
-                      <div className="question-card" key={question.id}>
-                        <div className="question-head">
-                          <span className="q-number">{question.id}.</span>
-                          <p>{question.text}</p>
-                        </div>
-                        <div className="answer-grid">
-                          {scale.map((option) => {
-                            const isChecked = String(selectedValue) === String(option.value);
-                            return (
-                              <label className={`option-box ${isChecked ? "selected" : ""}`} key={`${question.id}-${option.value}`}>
-                                <input
-                                  type="radio"
-                                  name={`q-${question.id}`}
-                                  value={String(option.value)}
-                                  checked={isChecked}
-                                  onChange={() => updateQuestion(String(question.id), option.value)}
-                                />
-                                <span className="option-score">{option.value}</span>
-                                <span className="option-label">{option.label}</span>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </section>
-              );
-            })}
+            <section className="question-criterion">
+              <h3>Evaluation questions</h3>
+              {orderedQuestions.map((question) => {
+                const scale = getScaleForQuestion(question.id);
+                const selectedValue = form.ratings[String(question.id)];
+                return (
+                  <div className="question-card" key={question.id}>
+                    <div className="question-head">
+                      <span className="q-number">{question.id}.</span>
+                      <p>{question.text}</p>
+                    </div>
+                    <div className="answer-grid">
+                      {scale.map((option) => {
+                        const isChecked = String(selectedValue) === String(option.value);
+                        return (
+                          <label className={`option-box ${isChecked ? "selected" : ""}`} key={`${question.id}-${option.value}`}>
+                            <input
+                              type="radio"
+                              name={`q-${question.id}`}
+                              value={String(option.value)}
+                              checked={isChecked}
+                              onChange={() => updateQuestion(String(question.id), option.value)}
+                            />
+                            <span className="option-score">{option.value}</span>
+                            <span className="option-label">{option.label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </section>
           </div>
           <div className="flow-act">
             <button type="button" className="secondary" onClick={() => setStep(1)}>Back</button>
@@ -670,7 +704,7 @@ function ClientFlow({ step, setStep, form, setForm, submit, catalog, submissions
 }
 function filteredRows(responses, filters) {
   const term = filters.search.trim().toLowerCase();
-  return responses.filter((item) => (!filters.teacher || item.teacher === filters.teacher) && (!filters.department || item.department === filters.department) && (!filters.subject || item.subject === filters.subject) && (!filters.semester || item.semester === filters.semester) && (!filters.period || item.period === filters.period) && (!term || `${item.teacher} ${item.subject} ${item.department} ${item.period}`.toLowerCase().includes(term)));
+  return responses.filter((item) => (!filters.teacher || item.teacher === filters.teacher) && (!filters.department || item.department === filters.department) && (!filters.subject || item.subject === filters.subject) && (!filters.semester || item.semester === filters.semester) && (!filters.academicYear || item.academicYear === filters.academicYear) && (!filters.period || item.period === filters.period) && (!term || `${item.teacher} ${item.subject} ${item.department} ${item.period} ${item.academicYear}`.toLowerCase().includes(term)));
 }
 function saveCsv(responses, criteria) {
   const headers = ["Teacher", "Department", "Subject", "Semester", "Academic year", "Evaluation period", "Anonymous responses", "Average rating", ...criteria.map((criterion) => criterion.name)];
@@ -823,7 +857,7 @@ function ReportCharts({ rows, criteria }) {
 function AdminFlow({ role, userId, department, responses, catalog, apiRequest, refreshCatalog, flash, questions, setQuestions, onAccountUpdated }) {
   const [activePanel, setActivePanel] = useState("dashboard");
   const [selectedReport, setSelectedReport] = useState(null);
-  const [filters, setFilters] = useState({ teacher: "", department: "", subject: "", semester: "", period: "", search: "" });
+  const [filters, setFilters] = useState({ teacher: "", department: "", subject: "", semester: "", academicYear: "", period: "", search: "" });
   const [accounts, setAccounts] = useState([]);
   const [accountSearch, setAccountSearch] = useState("");
   const [criteria, setCriteria] = useState(DEFAULT_CRITERIA);
@@ -863,7 +897,7 @@ function AdminFlow({ role, userId, department, responses, catalog, apiRequest, r
   const totalResponses = filtered.reduce((total, item) => total + item.responses, 0);
   const submittedEvaluations = responses.reduce((total, item) => total + item.responses, 0);
   const overallMean = totalResponses ? filtered.reduce((total, item) => total + item.mean * item.responses, 0) / totalResponses : 0;
-  const reportDepartments = role === "admin" ? DEPARTMENTS : department ? [department] : [];
+  const reportDepartments = catalog.departments.map((item) => typeof item === "string" ? item : item.name);
   const refreshAccounts = async () => {
     setAccounts(await apiRequest("/admin/users"));
   };
@@ -1128,7 +1162,7 @@ function AdminFlow({ role, userId, department, responses, catalog, apiRequest, r
       /* @__PURE__ */ jsxs("div", { className: "dashboard-title", children: [
         /* @__PURE__ */ jsxs("div", { children: [
           /* @__PURE__ */ jsx("h1", { children: nav.find((item) => item.id === activePanel)?.label }),
-          /* @__PURE__ */ jsx("p", { children: role === "admin" ? "Manage school accounts and evaluation operations, and review anonymous results." : "Review anonymous evaluation results for your department." })
+          /* @__PURE__ */ jsx("p", { children: role === "admin" ? "Manage school accounts and evaluation operations, and review anonymous results." : "Review anonymous evaluation results across all departments." })
         ] }),
         activePanel === "dashboard" && /* @__PURE__ */ jsxs("div", { className: "export-actions", children: [
           /* @__PURE__ */ jsxs("button", { className: "secondary", onClick: () => saveCsv(filtered, criteria), children: [
@@ -1142,7 +1176,6 @@ function AdminFlow({ role, userId, department, responses, catalog, apiRequest, r
         ] })
       ] }),
       activePanel === "dashboard" && /* @__PURE__ */ jsxs(Fragment, { children: [
-        role === "dean" && !department && /* @__PURE__ */ jsx("div", { className: "empty-state", role: "status", children: "Your Dean account has no department assigned. Ask an Admin to assign your department before viewing reports." }),
         /* @__PURE__ */ jsx("div", { className: "summary-cards", children: role === "admin" ? /* @__PURE__ */ jsxs(Fragment, { children: [
           /* @__PURE__ */ jsxs("div", { children: [
             /* @__PURE__ */ jsx("span", { children: "Students" }),
@@ -1292,12 +1325,12 @@ function AdminFlow({ role, userId, department, responses, catalog, apiRequest, r
             ] }),
             /* @__PURE__ */ jsxs("label", { children: [
               "Department",
-              /* @__PURE__ */ jsxs("select", { required: accountForm.role === "dean", value: accountForm.department, onChange: (event) => setAccountForm({ ...accountForm, department: event.target.value }), children: [
+              /* @__PURE__ */ jsxs("select", { value: accountForm.department, onChange: (event) => setAccountForm({ ...accountForm, department: event.target.value }), children: [
                 /* @__PURE__ */ jsxs("option", { value: "", children: [
                   "Select department",
                   accountForm.role === "dean" ? "" : " (optional)"
                 ] }),
-                DEPARTMENTS.map((department2) => /* @__PURE__ */ jsx("option", { children: department2 }, department2))
+                catalog.departments.map((item) => { const name = typeof item === "string" ? item : item.name; return /* @__PURE__ */ jsx("option", { children: name }, name); })
               ] })
             ] }),
             accountForm.role === "student" && /* @__PURE__ */ jsxs(Fragment, { children: [
@@ -1375,7 +1408,7 @@ function AdminFlow({ role, userId, department, responses, catalog, apiRequest, r
               "Department",
               /* @__PURE__ */ jsxs("select", { value: teacherForm.department, onChange: (event) => setTeacherForm({ ...teacherForm, department: event.target.value }), children: [
                 /* @__PURE__ */ jsx("option", { value: "", children: "Select department" }),
-                DEPARTMENTS.map((department2) => /* @__PURE__ */ jsx("option", { children: department2 }, department2))
+                catalog.departments.map((item) => { const name = typeof item === "string" ? item : item.name; return /* @__PURE__ */ jsx("option", { children: name }, name); })
               ] })
             ] }),
             /* @__PURE__ */ jsxs("button", { className: "primary", disabled: loading, children: [
@@ -1403,7 +1436,7 @@ function AdminFlow({ role, userId, department, responses, catalog, apiRequest, r
               "Department",
               /* @__PURE__ */ jsxs("select", { value: subjectForm.department, onChange: (event) => setSubjectForm({ ...subjectForm, department: event.target.value }), children: [
                 /* @__PURE__ */ jsx("option", { value: "", children: "Select department" }),
-                DEPARTMENTS.map((department2) => /* @__PURE__ */ jsx("option", { children: department2 }, department2))
+                catalog.departments.map((item) => { const name = typeof item === "string" ? item : item.name; return /* @__PURE__ */ jsx("option", { children: name }, name); })
               ] })
             ] }),
             editingSubjectId ? null : /* @__PURE__ */ jsxs("label", { children: [
@@ -1567,7 +1600,7 @@ function AdminFlow({ role, userId, department, responses, catalog, apiRequest, r
     ] })
   ] });
 }
-function AdminDashboard({ role, userId, department, responses, catalog, apiRequest, refreshCatalog, flash, questions, setQuestions, onAccountUpdated }) {
+function AdminDashboard({ role, userId, responses, catalog, apiRequest, refreshCatalog, flash, questions, setQuestions, onAccountUpdated }) {
   const [activePanel, setActivePanel] = useState(role === "admin" ? "dashboard" : "results");
   const [accounts, setAccounts] = useState([]);
   const [adminEvaluations, setAdminEvaluations] = useState([]);
@@ -1576,20 +1609,23 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
   const [subjectSearch, setSubjectSearch] = useState("");
   const [evaluationSearch, setEvaluationSearch] = useState("");
   const [selectedReport, setSelectedReport] = useState(null);
-  const [filters, setFilters] = useState({ teacher: "", department: "", subject: "", semester: "", period: "", search: "" });
+  const [filters, setFilters] = useState({ teacher: "", department: "", subject: "", semester: "", academicYear: "", period: "", search: "" });
   const [loading, setLoading] = useState(false);
   const [editingAccountId, setEditingAccountId] = useState(null);
-  const [accountForm, setAccountForm] = useState({ username: "", password: "", displayName: "", role: "student", department: "", studentNumber: "", courseId: "", yearLevel: "" });
+  const [accountForm, setAccountForm] = useState({ username: "", password: "", displayName: "", role: "student", department: "", studentNumber: "", courseId: "", yearLevel: "", subjectIds: [] });
   const [teacherForm, setTeacherForm] = useState({ teacherCode: "", name: "", department: "" });
   const [editingTeacherId, setEditingTeacherId] = useState(null);
   const [subjectForm, setSubjectForm] = useState({ subjectCode: "", name: "", department: "" });
   const [editingSubjectId, setEditingSubjectId] = useState(null);
-  const [courseForm, setCourseForm] = useState({ courseCode: "", courseName: "", subjectIds: [] });
+  const [courseForm, setCourseForm] = useState({ courseCode: "", courseName: "", department: "", subjectIds: [] });
   const [editingCourseId, setEditingCourseId] = useState(null);
   const [courseSearch, setCourseSearch] = useState("");
-  const [assignmentForm, setAssignmentForm] = useState({ teacherId: "", subjectId: "", semester: SEMESTERS[0], academicYear: "" });
+  const [departmentForm, setDepartmentForm] = useState({ name: "" });
+  const [editingDepartmentId, setEditingDepartmentId] = useState(null);
+  const [departmentSearch, setDepartmentSearch] = useState("");
+  const [assignmentForm, setAssignmentForm] = useState({ teacherId: "", subjectId: "", semester: "", academicYear: "" });
   const [editingAssignmentId, setEditingAssignmentId] = useState(null);
-  const [periodForm, setPeriodForm] = useState({ name: "", semester: SEMESTERS[0], academicYear: "", startsAt: "", endsAt: "" });
+  const [periodForm, setPeriodForm] = useState({ name: "", semester: "", academicYear: "", startsAt: "", endsAt: "" });
   const [editingPeriodId, setEditingPeriodId] = useState(null);
   const [criteria, setCriteria] = useState(DEFAULT_CRITERIA);
   const [criteriaText, setCriteriaText] = useState(JSON.stringify(DEFAULT_CRITERIA, null, 2));
@@ -1617,6 +1653,13 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
     const query = courseSearch.trim().toLocaleLowerCase();
     return (catalog.courses || []).filter((course) => !query || `${course.courseCode} ${course.courseName}`.toLocaleLowerCase().includes(query));
   }, [catalog.courses, courseSearch]);
+  const visibleDepartments = useMemo(() => {
+    const query = departmentSearch.trim().toLocaleLowerCase();
+    return (catalog.departments || []).filter((departmentRecord) => {
+      const name = typeof departmentRecord === "string" ? departmentRecord : departmentRecord.name;
+      return !query || String(name || "").toLocaleLowerCase().includes(query);
+    });
+  }, [catalog.departments, departmentSearch]);
   const visibleEvaluations = useMemo(() => {
     const query = evaluationSearch.trim().toLocaleLowerCase();
     return adminEvaluations.filter((evaluation) => !query || [
@@ -1625,7 +1668,8 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
   }, [adminEvaluations, evaluationSearch]);
   const totalEvaluations = responses.reduce((total, row) => total + Number(row.responses || 0), 0);
   const totalResponses = filtered.reduce((total, row) => total + Number(row.responses || 0), 0);
-  const reportDepartments = role === "admin" ? DEPARTMENTS : department ? [department] : [];
+  const reportDepartments = catalog.departments.map((item) => typeof item === "string" ? item : item.name);
+  const reportAcademicYears = [...new Set(responses.map((item) => item.academicYear).filter(Boolean))].sort();
   const printSummary = () => {
     setSelectedReport(null);
     window.setTimeout(() => window.print(), 0);
@@ -1659,7 +1703,7 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
   };
   const resetAccountForm = () => {
     setEditingAccountId(null);
-    setAccountForm({ username: "", password: "", displayName: "", role: activePanel === "deans" ? "dean" : "student", department: "", studentNumber: "", courseId: "", yearLevel: "" });
+    setAccountForm({ username: "", password: "", displayName: "", role: activePanel === "deans" ? "dean" : "student", department: "", studentNumber: "", courseId: "", yearLevel: "", subjectIds: [] });
   };
   const saveAccount = (event) => {
     event.preventDefault();
@@ -1675,16 +1719,8 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
       flash("Use a valid username and a temporary password with at least 12 characters.");
       return;
     }
-    if (roleForPanel === "dean" && !accountForm.department) {
-      flash("Select the Dean's department.");
-      return;
-    }
     if (roleForPanel === "student" && !editingAccountId && !accountForm.studentNumber.trim()) {
       flash("Student number is required.");
-      return;
-    }
-    if (roleForPanel === "student" && !accountForm.courseId) {
-      flash("Assign the student to a course.");
       return;
     }
     void runAction(async () => {
@@ -1693,18 +1729,19 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
           method: "PUT",
           body: JSON.stringify({
             displayName,
-            department: accountForm.department,
+            department: roleForPanel === "dean" ? "" : accountForm.department,
             studentNumber: accountForm.studentNumber.trim(),
-            courseId: Number(accountForm.courseId),
+            courseId: accountForm.courseId ? Number(accountForm.courseId) : null,
             yearLevel: accountForm.yearLevel.trim(),
+            subjectIds: accountForm.subjectIds.map(Number),
             ...(password ? { password } : {})
           })
         });
-        if (editingAccountId === userId) onAccountUpdated(displayName, accountForm.department);
+        if (editingAccountId === userId) onAccountUpdated(displayName, roleForPanel === "dean" ? "" : accountForm.department);
       } else {
         await apiRequest("/admin/users", {
           method: "POST",
-          body: JSON.stringify({ ...accountForm, username, displayName, role: roleForPanel, password, courseId: Number(accountForm.courseId) })
+          body: JSON.stringify({ ...accountForm, username, displayName, role: roleForPanel, department: roleForPanel === "dean" ? "" : accountForm.department, password, courseId: accountForm.courseId ? Number(accountForm.courseId) : null, subjectIds: roleForPanel === "student" ? accountForm.subjectIds.map(Number) : [] })
         });
       }
       resetAccountForm();
@@ -1721,7 +1758,8 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
       department: account.department || "",
       studentNumber: account.student_number || "",
       courseId: account.course_id ? String(account.course_id) : "",
-      yearLevel: account.year_level || ""
+      yearLevel: account.year_level || "",
+      subjectIds: (account.subject_ids || []).map(String)
     });
   };
   const deleteAccount = (account) => {
@@ -1808,11 +1846,12 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
         body: JSON.stringify({
           courseCode,
           courseName,
+          department: courseForm.department,
           subjectIds: courseForm.subjectIds.map(Number)
         })
       });
       setEditingCourseId(null);
-      setCourseForm({ courseCode: "", courseName: "", subjectIds: [] });
+      setCourseForm({ courseCode: "", courseName: "", department: "", subjectIds: [] });
       await refreshCatalog();
     }, editingCourseId ? "Course updated." : "Course added.");
   };
@@ -1821,6 +1860,7 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
     setCourseForm({
       courseCode: course.courseCode,
       courseName: course.courseName,
+      department: course.department || "",
       subjectIds: catalog.courseSubjects.filter((item) => item.courseId === course.id).map((item) => String(item.subjectId))
     });
   };
@@ -1830,11 +1870,32 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
       await apiRequest(`/admin/courses/${course.id}`, { method: "DELETE" });
       if (editingCourseId === course.id) {
         setEditingCourseId(null);
-        setCourseForm({ courseCode: "", courseName: "", subjectIds: [] });
+        setCourseForm({ courseCode: "", courseName: "", department: "", subjectIds: [] });
       }
       await refreshCatalog();
       await refreshAccounts();
     }, "Course deleted.");
+  };
+  const saveDepartment = (event) => {
+    event.preventDefault();
+    const name = departmentForm.name.trim();
+    if (name.length < 2 || name.length > 120) {
+      flash("Enter a department name between 2 and 120 characters.");
+      return;
+    }
+    void runAction(async () => {
+      await apiRequest(editingDepartmentId ? `/admin/departments/${editingDepartmentId}` : "/admin/departments", {
+        method: editingDepartmentId ? "PUT" : "POST",
+        body: JSON.stringify({ name })
+      });
+      setEditingDepartmentId(null);
+      setDepartmentForm({ name: "" });
+      await refreshCatalog();
+    }, editingDepartmentId ? "Department updated." : "Department added.");
+  };
+  const editDepartment = (departmentRecord) => {
+    setEditingDepartmentId(departmentRecord.id);
+    setDepartmentForm({ name: departmentRecord.name });
   };
   const saveAssignment = (event) => {
     event.preventDefault();
@@ -1844,7 +1905,7 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
       semester: assignmentForm.semester,
       academicYear: assignmentForm.academicYear.trim()
     };
-    if (!payload.teacherId || !payload.subjectId || !payload.academicYear) {
+    if (!payload.teacherId || !payload.subjectId || !payload.semester || !payload.academicYear) {
       flash("Select a teacher and subject and enter the academic year.");
       return;
     }
@@ -1854,7 +1915,7 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
         body: JSON.stringify(payload)
       });
       setEditingAssignmentId(null);
-      setAssignmentForm({ teacherId: "", subjectId: "", semester: SEMESTERS[0], academicYear: "" });
+      setAssignmentForm({ teacherId: "", subjectId: "", semester: "", academicYear: "" });
       await refreshCatalog();
     }, editingAssignmentId ? "Teacher assignment updated." : "Teacher assigned to subject.");
   };
@@ -1863,7 +1924,7 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
     setAssignmentForm({
       teacherId: String(assignment.teacherId),
       subjectId: String(assignment.subjectId),
-      semester: assignment.semester || SEMESTERS[0],
+      semester: assignment.semester || "",
       academicYear: assignment.academicYear || ""
     });
   };
@@ -1873,7 +1934,7 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
       await apiRequest(`/admin/assignments/${assignment.id}`, { method: "DELETE" });
       if (editingAssignmentId === assignment.id) {
         setEditingAssignmentId(null);
-        setAssignmentForm({ teacherId: "", subjectId: "", semester: SEMESTERS[0], academicYear: "" });
+        setAssignmentForm({ teacherId: "", subjectId: "", semester: "", academicYear: "" });
       }
       await refreshCatalog();
     }, "Teacher assignment removed.");
@@ -1882,7 +1943,7 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
     event.preventDefault();
     const startsAt = new Date(periodForm.startsAt);
     const endsAt = new Date(periodForm.endsAt);
-    if (!periodForm.name.trim() || !periodForm.academicYear.trim() || Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime()) || startsAt >= endsAt) {
+    if (!periodForm.name.trim() || !periodForm.semester || !periodForm.academicYear.trim() || Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime()) || startsAt >= endsAt) {
       flash("Enter a period name, academic year, and valid start/end dates.");
       return;
     }
@@ -1892,7 +1953,7 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
         body: JSON.stringify({ ...periodForm, name: periodForm.name.trim(), academicYear: periodForm.academicYear.trim(), startsAt: startsAt.toISOString(), endsAt: endsAt.toISOString() })
       });
       setEditingPeriodId(null);
-      setPeriodForm({ name: "", semester: SEMESTERS[0], academicYear: "", startsAt: "", endsAt: "" });
+      setPeriodForm({ name: "", semester: "", academicYear: "", startsAt: "", endsAt: "" });
       await refreshCatalog();
     }, editingPeriodId ? "Evaluation period updated." : "Evaluation period created.");
   };
@@ -1934,7 +1995,7 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
     { id: "deans", label: "Deans", icon: ShieldCheck },
     { id: "teachers", label: "Teachers", icon: Users },
     { id: "subjects", label: "Subjects & assignments", icon: BookOpen },
-    { id: "courses", label: "Courses", icon: BookOpen },
+    { id: "catalog-admin", label: "Departments & courses", icon: BookOpen },
     { id: "periods", label: "Evaluation periods", icon: CalendarDays },
     { id: "criteria", label: "Questions & criteria", icon: ClipboardCheck },
     { id: "evaluations", label: "Submitted evaluations", icon: FileText },
@@ -1960,7 +2021,7 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
         <div className="dashboard-title">
           <div>
             <h1>{nav.find((item) => item.id === activePanel)?.label}</h1>
-            <p>{role === "admin" ? "Manage school accounts, teaching resources, evaluation operations, and anonymous results." : "Review anonymous evaluation results for your department."}</p>
+            <p>{role === "admin" ? "Manage school accounts, teaching resources, evaluation operations, and anonymous results." : "Review anonymous evaluation results across all departments."}</p>
           </div>
           {role === "admin" && activePanel === "results" && (
             <div className="export-actions">
@@ -1977,7 +2038,6 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
 
         {activePanel === "dashboard" && (
           <>
-            {role === "dean" && !department && <div className="empty-state" role="status">Your Dean account has no department assigned. Ask an Admin to assign your department before viewing reports.</div>}
             <div className="summary-cards admin-summary-cards">
               {role === "admin" ? <>
                 <div><span>Total Students</span><strong>{accounts.filter((item) => item.role === "student").length}</strong><small>Student accounts</small></div>
@@ -2002,8 +2062,8 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
               </div>
             </section>}
             {role === "dean" && <section className="flow-card dashboard-panel">
-              <h2>Department overview</h2>
-              <p>Use evaluation results to filter teacher ratings and print anonymous aggregate reports.</p>
+              <h2>School-wide overview</h2>
+              <p>Review and print anonymous evaluation results across all departments.</p>
               <button type="button" className="primary" onClick={() => setActivePanel("results")}>View evaluation results</button>
             </section>}
           </>
@@ -2018,11 +2078,27 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
                 {!editingAccountId && <label>Username<input required minLength={3} maxLength={64} pattern="[a-zA-Z0-9._\-]+" value={accountForm.username} onChange={(event) => setAccountForm({ ...accountForm, username: event.target.value })} /></label>}
                 <label>{editingAccountId ? "New password (optional)" : "Temporary password"}<input type="password" autoComplete="new-password" required={!editingAccountId} minLength={12} maxLength={256} value={accountForm.password} onChange={(event) => setAccountForm({ ...accountForm, password: event.target.value })} /></label>
                 <label>Full name<input required minLength={2} maxLength={120} value={accountForm.displayName} onChange={(event) => setAccountForm({ ...accountForm, displayName: event.target.value })} /></label>
-                <label>Department<select required={selectedRole === "dean"} value={accountForm.department} onChange={(event) => setAccountForm({ ...accountForm, department: event.target.value })}><option value="">Select department{selectedRole === "student" ? " (optional)" : ""}</option>{DEPARTMENTS.map((item) => <option key={item}>{item}</option>)}</select></label>
+                {selectedRole === "student" && <label>Department (optional)<select value={accountForm.department} onChange={(event) => setAccountForm({ ...accountForm, department: event.target.value })}><option value="">Select department (optional)</option>{catalog.departments.map((item) => { const name = typeof item === "string" ? item : item.name; return <option key={name}>{name}</option>; })}</select></label>}
                 {selectedRole === "student" && <>
                   <label>Student number<input required maxLength={64} value={accountForm.studentNumber} onChange={(event) => setAccountForm({ ...accountForm, studentNumber: event.target.value })} /></label>
-                  <label>Course<select required value={accountForm.courseId} onChange={(event) => setAccountForm({ ...accountForm, courseId: event.target.value })}><option value="">Select course</option>{catalog.courses.map((course) => <option key={course.id} value={course.id}>{course.courseCode} · {course.courseName}</option>)}</select></label>
+                  <label>Course (optional)<select value={accountForm.courseId} onChange={(event) => setAccountForm({ ...accountForm, courseId: event.target.value })}><option value="">No course assigned</option>{catalog.courses.map((course) => <option key={course.id} value={course.id}>{course.courseCode} · {course.courseName}</option>)}</select></label>
+                  {!catalog.courses.length && <small className="cell-subtitle" role="status">No courses are available. You can still create the student account and assign subjects below.</small>}
                   <label>Year level<input maxLength={32} value={accountForm.yearLevel} onChange={(event) => setAccountForm({ ...accountForm, yearLevel: event.target.value })} /></label>
+                  <fieldset className="management-checkbox-list">
+                    <legend>Assigned subjects (optional)</legend>
+                    {catalog.subjects.length ? catalog.subjects.map((subject) => (
+                      <label key={subject.id}>
+                        <input type="checkbox" checked={accountForm.subjectIds.includes(String(subject.id))} onChange={(event) => setAccountForm({
+                          ...accountForm,
+                          subjectIds: event.target.checked
+                            ? [...accountForm.subjectIds, String(subject.id)]
+                            : accountForm.subjectIds.filter((id) => id !== String(subject.id))
+                        })} />
+                        {subject.subjectCode} · {subject.name}
+                      </label>
+                    )) : <p>No subjects are available to assign.</p>}
+                    <small>If no subjects are selected, the student's course subjects are used when available.</small>
+                  </fieldset>
                 </>}
                 <button className="primary" disabled={loading}>{editingAccountId ? "Save changes" : `Add ${roles[selectedRole].label}`}</button>
                 {editingAccountId && <button type="button" className="secondary" onClick={resetAccountForm}>Cancel edit</button>}
@@ -2033,10 +2109,10 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
                 <h2>{selectedRole === "dean" ? "Dean directory" : "Student directory"}</h2>
                 <label className="management-search"><Search size={15} /><input value={accountSearch} onChange={(event) => setAccountSearch(event.target.value)} placeholder={`Search ${selectedRole}s`} aria-label={`Search ${selectedRole}s`} /></label>
               </div>
-              <div className="table-wrap"><table><thead><tr><th>NAME</th><th>USERNAME</th><th>{selectedRole === "dean" ? "DEPARTMENT" : "STUDENT DETAILS"}</th><th>STATUS</th><th>ACTION</th></tr></thead>
+              <div className="table-wrap"><table><thead><tr><th>NAME</th><th>USERNAME</th><th>{selectedRole === "dean" ? "SCOPE" : "STUDENT DETAILS"}</th><th>STATUS</th><th>ACTION</th></tr></thead>
                 <tbody>{visibleAccounts.map((account) => <tr key={account.id}>
                   <td><strong>{account.display_name}</strong></td><td>{account.username}</td>
-                  <td>{selectedRole === "dean" ? account.department || "—" : [account.student_number, account.course, account.year_level].filter(Boolean).join(" · ")}</td>
+                  <td>{selectedRole === "dean" ? "All departments" : [account.student_number, account.department, account.course, account.year_level].filter(Boolean).join(" · ")}</td>
                   <td><span className={`account-status ${account.active ? "enabled" : "disabled"}`}>{account.active ? "Active" : "Disabled"}</span></td>
                   <td><button type="button" className="row-action" onClick={() => editAccount(account)}>Edit</button><button type="button" className="row-action" onClick={() => toggleAccount(account)}>{account.active ? "Disable" : "Enable"}</button><button type="button" className="row-action" onClick={() => deleteAccount(account)}>Delete</button></td>
                 </tr>)}
@@ -2054,7 +2130,7 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
               <form className="management-form" onSubmit={saveTeacher}>
                 <label>Teacher ID<input required maxLength={64} pattern="[A-Za-z0-9._\-]+" value={teacherForm.teacherCode} onChange={(event) => setTeacherForm({ ...teacherForm, teacherCode: event.target.value })} /></label>
                 <label>Teacher name<input required minLength={2} maxLength={120} value={teacherForm.name} onChange={(event) => setTeacherForm({ ...teacherForm, name: event.target.value })} /></label>
-                <label>Department<select value={teacherForm.department} onChange={(event) => setTeacherForm({ ...teacherForm, department: event.target.value })}><option value="">Select department</option>{DEPARTMENTS.map((item) => <option key={item}>{item}</option>)}</select></label>
+                <label>Department<select value={teacherForm.department} onChange={(event) => setTeacherForm({ ...teacherForm, department: event.target.value })}><option value="">Select department</option>{catalog.departments.map((item) => { const name = typeof item === "string" ? item : item.name; return <option key={name}>{name}</option>; })}</select></label>
                 <button className="primary" disabled={loading}>{editingTeacherId ? "Save teacher" : "Add teacher"}</button>
                 {editingTeacherId && <button type="button" className="secondary" onClick={() => { setEditingTeacherId(null); setTeacherForm({ teacherCode: "", name: "", department: "" }); }}>Cancel</button>}
               </form>
@@ -2081,7 +2157,7 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
                 <form className="management-form" onSubmit={saveSubject}>
                   <label>Subject Code<input required maxLength={32} pattern="[A-Za-z0-9._\-]+" value={subjectForm.subjectCode} onChange={(event) => setSubjectForm({ ...subjectForm, subjectCode: event.target.value })} /></label>
                   <label>Subject name<input required minLength={2} maxLength={160} value={subjectForm.name} onChange={(event) => setSubjectForm({ ...subjectForm, name: event.target.value })} /></label>
-                  <label>Department<select value={subjectForm.department} onChange={(event) => setSubjectForm({ ...subjectForm, department: event.target.value })}><option value="">Select department</option>{DEPARTMENTS.map((item) => <option key={item}>{item}</option>)}</select></label>
+                  <label>Department<select value={subjectForm.department} onChange={(event) => setSubjectForm({ ...subjectForm, department: event.target.value })}><option value="">Select department</option>{catalog.departments.map((item) => { const name = typeof item === "string" ? item : item.name; return <option key={name}>{name}</option>; })}</select></label>
                   <button className="primary" disabled={loading}>{editingSubjectId ? "Save subject" : "Add subject"}</button>
                   {editingSubjectId && <button type="button" className="secondary" onClick={() => { setEditingSubjectId(null); setSubjectForm({ subjectCode: "", name: "", department: "" }); }}>Cancel</button>}
                 </form>
@@ -2091,10 +2167,10 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
                 <form className="management-form" onSubmit={saveAssignment}>
                   <label>Teacher<select required value={assignmentForm.teacherId} onChange={(event) => setAssignmentForm({ ...assignmentForm, teacherId: event.target.value })}><option value="">Select teacher</option>{catalog.teachers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
                   <label>Subject<select required value={assignmentForm.subjectId} onChange={(event) => setAssignmentForm({ ...assignmentForm, subjectId: event.target.value })}><option value="">Select subject</option>{catalog.subjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-                  <label>Semester<select value={assignmentForm.semester} onChange={(event) => setAssignmentForm({ ...assignmentForm, semester: event.target.value })}>{SEMESTERS.map((item) => <option key={item}>{item}</option>)}</select></label>
+                  <label>Semester<select required value={assignmentForm.semester} onChange={(event) => setAssignmentForm({ ...assignmentForm, semester: event.target.value })}><option value="">Select semester</option>{SEMESTERS.map((item) => <option key={item}>{item}</option>)}</select></label>
                   <label>Academic year<input required maxLength={32} placeholder="2026-2027" value={assignmentForm.academicYear} onChange={(event) => setAssignmentForm({ ...assignmentForm, academicYear: event.target.value })} /></label>
                   <button className="primary" disabled={loading}>{editingAssignmentId ? "Save assignment" : "Assign teacher"}</button>
-                  {editingAssignmentId && <button type="button" className="secondary" onClick={() => { setEditingAssignmentId(null); setAssignmentForm({ teacherId: "", subjectId: "", semester: SEMESTERS[0], academicYear: "" }); }}>Cancel</button>}
+                  {editingAssignmentId && <button type="button" className="secondary" onClick={() => { setEditingAssignmentId(null); setAssignmentForm({ teacherId: "", subjectId: "", semester: "", academicYear: "" }); }}>Cancel</button>}
                 </form>
               </section>
             </div>
@@ -2122,7 +2198,30 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
           </>
         )}
 
-        {role === "admin" && activePanel === "courses" && (
+        {role === "admin" && activePanel === "catalog-admin" && (
+          <div className="management-grid">
+            <section className="flow-card dashboard-panel">
+              <h2>{editingDepartmentId ? "Edit department" : "Add department"}</h2>
+              <form className="management-form" onSubmit={saveDepartment}>
+                <label>Department name<input required minLength={2} maxLength={120} value={departmentForm.name} onChange={(event) => setDepartmentForm({ name: event.target.value })} /></label>
+                <button className="primary" disabled={loading}>{editingDepartmentId ? "Save department" : "Add department"}</button>
+                {editingDepartmentId && <button type="button" className="secondary" onClick={() => { setEditingDepartmentId(null); setDepartmentForm({ name: "" }); }}>Cancel</button>}
+              </form>
+            </section>
+            <section className="flow-card dashboard-panel">
+              <div className="management-table-heading"><h2>Department directory</h2><label className="management-search"><Search size={15} /><input value={departmentSearch} onChange={(event) => setDepartmentSearch(event.target.value)} placeholder="Search departments" aria-label="Search departments" /></label></div>
+              <div className="table-wrap"><table><thead><tr><th>DEPARTMENT</th><th>ACTION</th></tr></thead>
+                <tbody>{visibleDepartments.map((departmentRecord) => {
+                  const department = typeof departmentRecord === "string" ? { id: departmentRecord, name: departmentRecord } : departmentRecord;
+                  return <tr key={department.id}><td><strong>{department.name}</strong></td><td><button type="button" className="row-action" onClick={() => editDepartment(department)}>Edit</button></td></tr>;
+                })}
+                {!visibleDepartments.length && <tr><td colSpan="2">{catalog.departments.length ? "No departments match this search." : "No departments have been created yet."}</td></tr>}</tbody>
+              </table></div>
+            </section>
+          </div>
+        )}
+
+        {role === "admin" && activePanel === "catalog-admin" && (
           <div className="management-grid">
             <section className="flow-card dashboard-panel">
               <h2>{editingCourseId ? "Edit course" : "Add course"}</h2>
@@ -2130,7 +2229,8 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
               <form className="management-form" onSubmit={saveCourse}>
                 <label>Course Code<input required maxLength={32} pattern="[A-Za-z0-9._\-]+" value={courseForm.courseCode} onChange={(event) => setCourseForm({ ...courseForm, courseCode: event.target.value })} /></label>
                 <label>Course Name<input required minLength={2} maxLength={160} value={courseForm.courseName} onChange={(event) => setCourseForm({ ...courseForm, courseName: event.target.value })} /></label>
-                <fieldset className="criteria-settings">
+                <label>Department (optional)<select value={courseForm.department} onChange={(event) => setCourseForm({ ...courseForm, department: event.target.value })}><option value="">No department link</option>{catalog.departments.map((item) => { const name = typeof item === "string" ? item : item.name; return <option key={name}>{name}</option>; })}</select></label>
+                <fieldset className="management-checkbox-list">
                   <legend>Subjects in this course</legend>
                   {!catalog.subjects.length && <p>Add subjects before connecting them to courses.</p>}
                   {catalog.subjects.map((subject) => (
@@ -2150,7 +2250,7 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
                   ))}
                 </fieldset>
                 <button className="primary" disabled={loading}>{editingCourseId ? "Save course" : "Add course"}</button>
-                {editingCourseId && <button type="button" className="secondary" onClick={() => { setEditingCourseId(null); setCourseForm({ courseCode: "", courseName: "", subjectIds: [] }); }}>Cancel</button>}
+                {editingCourseId && <button type="button" className="secondary" onClick={() => { setEditingCourseId(null); setCourseForm({ courseCode: "", courseName: "", department: "", subjectIds: [] }); }}>Cancel</button>}
               </form>
             </section>
             <section className="flow-card dashboard-panel">
@@ -2158,17 +2258,17 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
                 <h2>Course directory</h2>
                 <label className="management-search"><Search size={15} /><input value={courseSearch} onChange={(event) => setCourseSearch(event.target.value)} placeholder="Search courses" aria-label="Search courses" /></label>
               </div>
-              <div className="table-wrap"><table><thead><tr><th>COURSE CODE</th><th>COURSE NAME</th><th>STUDENTS</th><th>SUBJECTS</th><th>ACTION</th></tr></thead>
+              <div className="table-wrap"><table><thead><tr><th>COURSE CODE</th><th>COURSE NAME</th><th>DEPARTMENT</th><th>STUDENTS</th><th>SUBJECTS</th><th>ACTION</th></tr></thead>
                 <tbody>{visibleCourses.map((course) => {
                   const linkedSubjectIds = catalog.courseSubjects.filter((item) => item.courseId === course.id).map((item) => item.subjectId);
                   const enrolledStudents = accounts.filter((account) => account.role === "student" && Number(account.course_id) === course.id).length;
                   return <tr key={course.id}>
-                    <td>{course.courseCode}</td><td><strong>{course.courseName}</strong></td><td>{enrolledStudents}</td>
+                    <td>{course.courseCode}</td><td><strong>{course.courseName}</strong></td><td>{course.department || "—"}</td><td>{enrolledStudents}</td>
                     <td>{catalog.subjects.filter((subject) => linkedSubjectIds.includes(subject.id)).map((subject) => subject.subjectCode).join(", ") || "No subjects linked"}</td>
                     <td><button type="button" className="row-action" onClick={() => editCourse(course)}>Edit</button><button type="button" className="row-action" onClick={() => deleteCourse(course)}>Delete</button></td>
                   </tr>;
                 })}
-                {!visibleCourses.length && <tr><td colSpan="5">{catalog.courses.length ? "No courses match this search." : "No courses have been created yet."}</td></tr>}</tbody>
+                {!visibleCourses.length && <tr><td colSpan="6">{catalog.courses.length ? "No courses match this search." : "No courses have been created yet."}</td></tr>}</tbody>
               </table></div>
             </section>
           </div>
@@ -2181,12 +2281,12 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
               <p>New evaluation periods are closed until you choose to open them.</p>
               <form className="management-form period-create-form" onSubmit={savePeriod}>
                 <label>Period name<input required minLength={3} maxLength={120} value={periodForm.name} onChange={(event) => setPeriodForm({ ...periodForm, name: event.target.value })} /></label>
-                <label>Semester<select value={periodForm.semester} onChange={(event) => setPeriodForm({ ...periodForm, semester: event.target.value })}>{SEMESTERS.map((item) => <option key={item}>{item}</option>)}</select></label>
+                <label>Semester<select required value={periodForm.semester} onChange={(event) => setPeriodForm({ ...periodForm, semester: event.target.value })}><option value="">Select semester</option>{SEMESTERS.map((item) => <option key={item}>{item}</option>)}</select></label>
                 <label>Academic year<input required maxLength={32} placeholder="2026-2027" value={periodForm.academicYear} onChange={(event) => setPeriodForm({ ...periodForm, academicYear: event.target.value })} /></label>
                 <label>Starts<input required type="datetime-local" value={periodForm.startsAt} onChange={(event) => setPeriodForm({ ...periodForm, startsAt: event.target.value })} /></label>
                 <label>Ends<input required type="datetime-local" value={periodForm.endsAt} onChange={(event) => setPeriodForm({ ...periodForm, endsAt: event.target.value })} /></label>
                 <button className="primary" disabled={loading}>{editingPeriodId ? "Save period" : "Create period"}</button>
-                {editingPeriodId && <button type="button" className="secondary" onClick={() => { setEditingPeriodId(null); setPeriodForm({ name: "", semester: SEMESTERS[0], academicYear: "", startsAt: "", endsAt: "" }); }}>Cancel</button>}
+                {editingPeriodId && <button type="button" className="secondary" onClick={() => { setEditingPeriodId(null); setPeriodForm({ name: "", semester: "", academicYear: "", startsAt: "", endsAt: "" }); }}>Cancel</button>}
               </form>
             </section>
             <section className="flow-card dashboard-panel">
@@ -2253,6 +2353,7 @@ function AdminDashboard({ role, userId, department, responses, catalog, apiReque
                 <label>Evaluation period<select value={filters.period} onChange={(event) => setFilters({ ...filters, period: event.target.value })}><option value="">All periods</option>{catalog.periods.map((item) => <option key={item.id}>{item.name}</option>)}</select></label>
                 <label>Department<select value={filters.department} onChange={(event) => setFilters({ ...filters, department: event.target.value })}><option value="">All departments</option>{reportDepartments.map((item) => <option key={item}>{item}</option>)}</select></label>
                 <label>Semester<select value={filters.semester} onChange={(event) => setFilters({ ...filters, semester: event.target.value })}><option value="">All semesters</option>{SEMESTERS.map((item) => <option key={item}>{item}</option>)}</select></label>
+                <label>Academic year<select value={filters.academicYear} onChange={(event) => setFilters({ ...filters, academicYear: event.target.value })}><option value="">All academic years</option>{reportAcademicYears.map((year) => <option key={year}>{year}</option>)}</select></label>
               </div>
               <ReportCharts rows={filtered} criteria={criteria} />
             </section>

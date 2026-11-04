@@ -85,9 +85,18 @@ foreach ($teacherRows as $row) {
 }
 $subjectRows = $pdo->query('SELECT id, name, subject_code FROM subjects ORDER BY id')->fetchAll();
 $subjectCodes = [];
+$knownSubjectCodes = ['Student/Teacher Evaluation Questionnaires' => 'STEQ'];
 $subjectUpdate = $pdo->prepare('UPDATE subjects SET subject_code = ? WHERE id = ?');
 foreach ($subjectRows as $row) {
     $code = trim((string) ($row['subject_code'] ?? ''));
+    if (isset($knownSubjectCodes[$row['name']])) {
+        $code = $knownSubjectCodes[$row['name']];
+        if ($row['subject_code'] !== $code) {
+            $subjectUpdate->execute([$code, $row['id']]);
+        }
+        $subjectCodes[strtolower($code)] = true;
+        continue;
+    }
     if ($code === '') {
         $prefix = explode(' - ', $row['name'], 2)[0];
         $code = strtoupper(trim((string) preg_replace('/[^A-Za-z0-9]+/', '-', $prefix), '-'));

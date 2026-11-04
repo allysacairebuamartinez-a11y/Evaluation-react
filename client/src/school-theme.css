@@ -760,6 +760,61 @@ body {
   margin-top: 15px;
 }
 
+.management-form .management-checkbox-list {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+  gap: 8px;
+  min-width: 0;
+  margin: 2px 0 0;
+  padding: 12px;
+  border: 1px solid #dfe7ed;
+  border-radius: 6px;
+  background: #fbfcfd;
+}
+
+.management-checkbox-list legend {
+  padding: 0 5px;
+  color: #536a81;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.management-checkbox-list label {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid #e5ebef;
+  border-radius: 5px;
+  background: #fff;
+  color: #536a81;
+  font-size: 0.68rem;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.management-checkbox-list input[type='checkbox'] {
+  flex: 0 0 16px;
+  width: 16px;
+  min-width: 16px;
+  min-height: 16px;
+  height: 16px;
+  margin: 1px 0 0;
+  padding: 0;
+  accent-color: #d7a52d;
+}
+
+.management-checkbox-list p,
+.management-checkbox-list > small {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #718197;
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
 .management-form .primary {
   min-height: 38px;
   justify-self: start;
