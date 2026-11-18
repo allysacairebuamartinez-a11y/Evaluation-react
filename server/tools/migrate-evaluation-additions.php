@@ -34,4 +34,21 @@ $pdo->exec(
      ) ENGINE=InnoDB"
 );
 
+$columns = $pdo->query('SHOW COLUMNS FROM activity_logs')->fetchAll(PDO::FETCH_COLUMN);
+$required = ['id', 'actor_name', 'actor_role'];
+$schemas = [
+    ['user_id', 'action', 'details', 'created_at'],
+    ['actor_user_id', 'action_type', 'description', 'occurred_at'],
+];
+$compatible = false;
+foreach ($schemas as $schema) {
+    if (array_diff(array_merge($required, $schema), $columns) === []) {
+        $compatible = true;
+        break;
+    }
+}
+if (!$compatible) {
+    throw new RuntimeException('The existing activity_logs table has an unsupported schema. It was left unchanged.');
+}
+
 fwrite(STDOUT, "Activity log table is ready. Existing application records were not modified.\n");

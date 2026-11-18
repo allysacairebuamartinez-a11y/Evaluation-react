@@ -74,7 +74,7 @@ The additional activity log table is also additive. For an existing installation
 C:\xampp\php\php.exe server\tools\migrate-evaluation-additions.php
 ```
 
-This creates `activity_logs` only; it does not update or delete existing application records. Do not re-import `database.sql` into a live database.
+The migration creates `activity_logs` only when it is missing. Existing activity-log rows and schemas are left intact; the API supports both the current schema and the legacy `actor_user_id`/`action_type`/`description`/`occurred_at` schema. If it encounters an unknown schema, the migration stops instead of altering it. It does not update or delete existing application records. Do not re-import `database.sql` into a live database.
 
 ### 4. Configure PHP's MySQL connection
 

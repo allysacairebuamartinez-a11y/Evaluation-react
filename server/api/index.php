@@ -118,13 +118,36 @@ try {
         ];
     }
 
+    function activity_log_schema(PDO $pdo): array
+    {
+        static $columns = null;
+        if ($columns === null) {
+            $columns = $pdo->query('SHOW COLUMNS FROM activity_logs')->fetchAll(PDO::FETCH_COLUMN);
+        }
+
+        $required = ['id', 'actor_name', 'actor_role'];
+        $schemas = [
+            ['user' => 'user_id', 'action' => 'action', 'details' => 'details', 'created' => 'created_at'],
+            ['user' => 'actor_user_id', 'action' => 'action_type', 'details' => 'description', 'created' => 'occurred_at'],
+        ];
+        foreach ($schemas as $schema) {
+            if (array_diff(array_merge($required, array_values($schema)), $columns) === []) {
+                return $schema;
+            }
+        }
+
+        throw new RuntimeException('The activity_logs table has an unsupported schema.');
+    }
+
     function record_activity(PDO $pdo, array $user, string $action, string $details = ''): void
     {
         if (!in_array($user['role'] ?? '', ['admin', 'dean'], true)) {
             return;
         }
+        $columns = activity_log_schema($pdo);
         $statement = $pdo->prepare(
-            'INSERT INTO activity_logs (user_id, actor_name, actor_role, action, details)
+            'INSERT INTO activity_logs (' . $columns['user'] . ', actor_name, actor_role, '
+            . $columns['action'] . ', ' . $columns['details'] . ')
              VALUES (?, ?, ?, ?, ?)'
         );
         $statement->execute([
@@ -473,9 +496,11 @@ try {
 
     if ($method === 'GET' && $route === '/admin/activity') {
         $admin = require_user($user, ['admin']);
+        $columns = activity_log_schema($pdo);
         $statement = $pdo->query(
-            'SELECT actor_name AS actor, actor_role AS role, action, details,
-                    created_at AS createdAt
+            'SELECT actor_name AS actor, actor_role AS role, '
+            . $columns['action'] . ' AS action, ' . $columns['details'] . ' AS details, '
+            . $columns['created'] . ' AS createdAt
              FROM activity_logs ORDER BY id DESC LIMIT 20'
         );
         $activities = $statement->fetchAll();
