@@ -243,6 +243,21 @@ CREATE TABLE IF NOT EXISTS system_settings (
   PRIMARY KEY (setting_key)
 ) ENGINE=InnoDB;
 
+CREATE TABLE IF NOT EXISTS activity_logs (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id INT UNSIGNED NULL,
+  actor_name VARCHAR(120) NOT NULL,
+  actor_role ENUM('admin', 'dean') NOT NULL,
+  action VARCHAR(80) NOT NULL,
+  details VARCHAR(255) NOT NULL DEFAULT '',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_activity_logs_created (created_at),
+  KEY idx_activity_logs_user (user_id),
+  CONSTRAINT fk_activity_logs_user
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
 -- Restored catalog records from the project's legacy school catalog.
 INSERT IGNORE INTO departments (id, name)
 VALUES (1, 'College of Teacher Education');

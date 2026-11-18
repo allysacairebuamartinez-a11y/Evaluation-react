@@ -68,6 +68,14 @@ C:\xampp\php\php.exe server\tools\migrate-catalog.php
 
 The migration adds Teacher IDs, Subject Codes, Courses, Course–Subject links, and the Student course link. It also creates legacy Course records from existing Student course text and connects those Students without removing or overwriting their records. It does not guess Teacher–Subject term assignments or Course–Subject mappings; an Admin must review and set those relationships.
 
+The additional activity log table is also additive. For an existing installation, run:
+
+```powershell
+C:\xampp\php\php.exe server\tools\migrate-evaluation-additions.php
+```
+
+This creates `activity_logs` only; it does not update or delete existing application records. Do not re-import `database.sql` into a live database.
+
 ### 4. Configure PHP's MySQL connection
 
 Open `server\api\config.php`. It is a safe, tracked configuration with blank-password XAMPP defaults:
@@ -110,7 +118,7 @@ $env:Path = "C:\xampp\php;$env:Path"
 
 Open `http://localhost:5173`. Vite serves the React JavaScript frontend and proxies API requests to Apache/PHP. Node.js is needed for Vite only; it does not run the API or database. There is no TypeScript, SQLite, or Express.js runtime requirement.
 
-Vite development uses the PHP/MySQL API by default. To enable the temporary in-memory demo, set `VITE_DEMO_MODE=true` in `client\.env.local` and restart Vite. Choose Admin, Dean, or Student and sign in with any values. Demo mode skips database authentication and uses sample data; changes are discarded on reload and no demo request reaches PHP or MySQL. The top bar displays **DEMO MODE** while active.
+Vite development uses the PHP/MySQL API by default. To enable the temporary in-memory demo, set `VITE_DEMO_MODE=true` in `client\.env.local` and restart Vite. Sign in with `admin.demo`, `dean.demo`, or `student.demo`; the account role is inferred from that username. Demo mode skips database authentication and uses sample data; changes are discarded on reload and no demo request reaches PHP or MySQL. The top bar displays **DEMO MODE** while active.
 
 To turn demo mode off, remove the setting or set `VITE_DEMO_MODE=false`. Production builds always use the normal database-backed login, regardless of this setting.
 
@@ -120,16 +128,16 @@ For a production build, make sure XAMPP PHP is on `PATH`, then run `npm run buil
 
 1. **Admin:** Sign in with the account created above. The repository intentionally contains no default passwords or pre-made login accounts. Use Admin management to create Dean and Student accounts. Verify the dashboard totals and the Students, Deans, Teachers, Subjects & assignments, Courses, Departments, Evaluation periods, Questions & criteria, Submitted evaluations, and Evaluation results modules. Add departments and courses independently; course enrollment is optional. Assign subjects directly to students or connect subjects to a course, assign teachers to subjects for the selected semester and academic year, and open an evaluation period whose dates include today.
 2. **Student:** Sign in with the account created by Admin. Choose an open period and an assigned teacher/subject, complete the evaluation, and confirm submission. Verify the status becomes Completed and a second submission for that teacher and period is rejected. Students can see their own status only, not answers or overall reports.
-3. **Dean:** Sign in with the account created by Admin; no department assignment is needed for a Dean account. Verify that only Evaluation results navigation is available, results cover all departments, and the available actions are View Details and Print. Use the filters and test both individual and summary print actions.
+3. **Dean:** Admin must assign each Dean account to an authorized department. Verify the Dean can monitor aggregate pending/completed participation and view/print anonymous reports only for that department.
 4. **Admin (final review):** Return to Admin and verify records, period status, anonymous submitted evaluations, and filtered/printable results. Admin is the only role with system-management actions.
 
 The imported sample period is closed; an Admin must create/open a current period before the Student evaluation step. The legacy archive's teacher-subject links used `1st Year` / `2nd Year` labels rather than the current semester and academic-year fields, so reassign subjects in Admin using the school's correct terms. Two teacher names in the archive already contain ellipses; verify and correct them with Admin if the full names are available. The schema keeps student IDs only in a separate duplicate-prevention table; evaluation and answer rows do not contain student IDs. Legacy `.sqlite` files under `server\data`, if present from an earlier version, are archival files and are not read by this PHP/MySQL application. Leave them untouched unless their owner separately confirms they are no longer needed.
 
 ## Roles and privacy
 
-- **Admin** has separate Student, Dean, Teacher, Subject/assignment, Evaluation period, Question/criteria, Submitted evaluations, and Evaluation results modules. Admin can search and manage accounts/catalog records, open or close periods, view anonymous submissions, export CSV, and print reports.
-- **Dean** can view and print anonymous aggregate reports across all departments, with an optional department filter.
-- **Student** can view their enrolled Course, its Subjects, assigned Teachers, and evaluation status; complete a criteria-based evaluation during an open period; and see their own completed evaluations. Submissions require confirmation and cannot be edited; students cannot access reports or another student's submissions.
+- **Admin** has separate Student, Dean, Teacher, Subject/assignment, Evaluation period, Question/criteria, Submitted evaluations, Evaluation results, and System settings modules. The dashboard reads evaluation status and participation from MySQL and shows recent administrator/Dean activity.
+- **Dean** can monitor aggregate pending/completed participation and view/print anonymous aggregate reports for the department assigned to that Dean account. Department access is enforced by the PHP API, not only by the UI.
+- **Student** can view their enrolled Course, its Subjects, assigned Teachers, and Pending/Ongoing/Completed evaluation status; receive in-app schedule, pending-work, and deadline reminders; complete an evaluation only during its scheduled period; and see their own completed submissions. Submissions require confirmation and cannot be edited; students cannot access reports or another student's submissions.
 - The database prevents a student from submitting a second evaluation for the same teacher in an evaluation period. Evaluation answers are anonymous and individual student identities are not included in reports.
 
 PHP API files are in `server/api`. The complete importable MySQL schema is `server/database.sql`; `server\tools\migrate-catalog.php` upgrades an existing MySQL installation. The PHP API uses PDO prepared statements and PHP sessions; there is no Node.js backend.

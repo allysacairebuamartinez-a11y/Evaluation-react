@@ -64,6 +64,8 @@ export function createDemoApi(questions, criteria) {
     ],
     questions: clone(questions),
     criteria: clone(criteria),
+    settings: { schoolName: "OLPC-SMI Online Teachers Evaluation System", academicYear: "2026-2027", semester: "1st Semester", deadlineNoticeDays: "3" },
+    activities: [],
     nextIds: { teacher: 5, subject: 5, assignment: 5, course: 3, period: 2, account: 103, evaluation: 2 }
   };
   const questionScores = Object.fromEntries(Array.from({ length: 28 }, (_, index) => [String(index + 1), 4.2 + (index % 5) * 0.15]));
@@ -88,21 +90,27 @@ export function createDemoApi(questions, criteria) {
       };
     }).filter(Boolean);
     const student = role === "student";
+    const dean = role === "dean";
     const studentSubjects = student
       ? new Set(store.courseSubjects.filter((link) => link.courseId === 1).map((link) => link.subjectId))
       : null;
-    const allowedAssignments = assigned.filter((item) => !student || studentSubjects.has(item.subjectId));
+    const allowedAssignments = assigned.filter((item) =>
+      (!student || studentSubjects.has(item.subjectId)) &&
+      (!dean || item.department === department)
+    );
     const allowedTeacherIds = new Set(allowedAssignments.map((item) => item.teacherId));
     const allowedSubjectIds = new Set(allowedAssignments.map((item) => item.subjectId));
     return {
-      teachers: store.teachers.filter((item) => !student || allowedTeacherIds.has(item.id)),
-      subjects: store.subjects.filter((item) => !student || allowedSubjectIds.has(item.id)),
+      teachers: store.teachers.filter((item) => (!student && !dean) || allowedTeacherIds.has(item.id)),
+      subjects: store.subjects.filter((item) => (!student && !dean) || allowedSubjectIds.has(item.id)),
       assignments: allowedAssignments,
       courses: role === "admin" ? store.courses : [],
       courseSubjects: role === "admin" ? store.courseSubjects : [],
       studentCourse: student ? { id: 1, code: store.courses[0]?.courseCode || "BEED", name: store.courses[0]?.courseName || "Bachelor of Elementary Education" } : null,
+      scopeDepartment: dean || student ? department : "",
+      deadlineNoticeDays: Number(store.settings.deadlineNoticeDays),
       periods: store.periods,
-      departments
+      departments: dean ? [department] : departments
     };
   };
   const routeError = (route) => {
@@ -117,6 +125,64 @@ export function createDemoApi(questions, criteria) {
     let match;
 
     if (method === "GET" && route === "/catalog") return clone(catalogFor(role));
+    if (method === "GET" && route === "/dashboard/metrics") {
+      const progress = store.periods.map((period) => {
+        const now = Date.now();
+        const startsAt = Date.parse(period.starts_at);
+        const endsAt = Date.parse(period.ends_at);
+        const status = startsAt > now ? "Pending" : period.status === "open" && endsAt >= now ? "Ongoing" : "Completed";
+        const periodAssignments = store.assignments.filter((assignment) =>
+          (!assignment.semester || assignment.semester === period.semester) &&
+          (!assignment.academicYear || assignment.academicYear === period.academic_year) &&
+          (role !== "dean" || store.teachers.find((teacher) => teacher.id === assignment.teacherId)?.department === department)
+        );
+        const eligible = periodAssignments.filter((assignment) =>
+          store.courseSubjects.some((link) => link.courseId === 1 && link.subjectId === assignment.subjectId)
+        ).length;
+        const completed = store.submissions.filter((submission) =>
+          submission.periodId === period.id &&
+          periodAssignments.some((assignment) =>
+            store.teachers.find((teacher) => teacher.id === assignment.teacherId)?.name === submission.teacher &&
+            store.subjects.find((subject) => subject.id === assignment.subjectId)?.name === submission.subject
+          )
+        ).length;
+        return {
+          id: period.id,
+          name: period.name,
+          semester: period.semester,
+          academicYear: period.academic_year,
+          startsAt: period.starts_at,
+          endsAt: period.ends_at,
+          status,
+          eligible,
+          completed,
+          pending: Math.max(0, eligible - completed),
+          participationPercentage: eligible ? Math.round(Math.min(completed, eligible) * 1000 / eligible) / 10 : 0
+        };
+      });
+      const eligible = progress.reduce((sum, period) => sum + period.eligible, 0);
+      const completed = progress.reduce((sum, period) => sum + Math.min(period.completed, period.eligible), 0);
+      return {
+        periods: progress,
+        pendingEvaluations: progress.reduce((sum, period) => sum + period.pending, 0),
+        ongoingPeriods: progress.filter((period) => period.status === "Ongoing").length,
+        completedPeriods: progress.filter((period) => period.status === "Completed").length,
+        participationPercentage: eligible ? Math.round(completed * 1000 / eligible) / 10 : 0
+      };
+    }
+    if (method === "GET" && route === "/admin/activity") return clone(store.activities.slice(0, 20));
+    if (method === "GET" && route === "/admin/settings/system") return clone(store.settings);
+    if (method === "PUT" && route === "/admin/settings/system") {
+      Object.assign(store.settings, body);
+      store.activities.unshift({
+        actor: "Demo Admin",
+        role: "admin",
+        action: "system.settings.updated",
+        details: "Updated school and evaluation defaults.",
+        createdAt: new Date().toISOString()
+      });
+      return { status: "updated" };
+    }
     if (method === "GET" && route === "/settings/questions") return { questions: clone(store.questions) };
     if (method === "GET" && route === "/settings/criteria") return { criteria: clone(store.criteria) };
     if (method === "PUT" && route === "/admin/settings/questions") {
@@ -130,6 +196,7 @@ export function createDemoApi(questions, criteria) {
     if (method === "GET" && route === "/reports") {
       const filters = requestUrl.searchParams;
       return clone(reports.filter((row) =>
+        (role !== "dean" || row.department === department) &&
         (!filters.get("teacher") || row.teacher === filters.get("teacher")) &&
         (!filters.get("department") || row.department === filters.get("department")) &&
         (!filters.get("subject") || row.subject === filters.get("subject")) &&
@@ -139,21 +206,23 @@ export function createDemoApi(questions, criteria) {
       ));
     }
     if (method === "GET" && route === "/reports/filters") {
-      const rows = reports;
+      const rows = role === "dean" ? reports.filter((row) => row.department === department) : reports;
       return Object.fromEntries(["teacher", "subject", "department", "period", "semester", "academicYear"].map((key) => [
         key,
         [...new Set(rows.map((row) => row[key]).filter(Boolean))].sort()
       ]));
     }
     if (method === "POST" && route === "/reports/submit") {
-      return { status: "submitted", submitted_at: new Date().toISOString(), reports: clone(reports), submitted_by: "Demo user" };
+      return { status: "submitted", submitted_at: new Date().toISOString(), reports: clone(role === "dean" ? reports.filter((row) => row.department === department) : reports), submitted_by: "Demo user" };
     }
     if (method === "GET" && route === "/my-submissions") return clone(store.submissions);
     if (method === "POST" && route === "/responses") {
       const period = store.periods.find((item) => item.id === Number(body.periodId));
       if (!period) throw new Error("Choose a sample evaluation period.");
-      if (store.submissions.some((item) => item.teacher === body.teacher && item.periodId === period.id)) {
-        throw new Error("You have already evaluated this teacher for this period.");
+      if (store.submissions.some((item) =>
+        item.teacher === body.teacher && item.subject === body.subject && item.periodId === period.id
+      )) {
+        throw new Error("You have already evaluated this teacher and subject for this period.");
       }
       store.submissions.push({ teacher: body.teacher, subject: body.subject, period: period.name, periodId: period.id });
       const teacher = store.teachers.find((item) => item.name === body.teacher);

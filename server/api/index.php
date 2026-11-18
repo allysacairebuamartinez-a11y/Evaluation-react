@@ -61,8 +61,11 @@ try {
         }
         $statement = $pdo->prepare(
             'SELECT users.id, users.username, users.role, users.display_name,
-                    COALESCE(departments.name, users.department) AS department, users.active
-             FROM users LEFT JOIN departments ON departments.id = users.department_id
+                    COALESCE(NULLIF(deans.department, \'\'), departments.name, users.department) AS department,
+                    users.active
+             FROM users
+             LEFT JOIN departments ON departments.id = users.department_id
+             LEFT JOIN deans ON deans.user_id = users.id
              WHERE users.id = ? LIMIT 1'
         );
         $statement->execute([(int) $_SESSION['user_id']]);
@@ -113,6 +116,37 @@ try {
             'displayName' => $user['displayName'] ?? $user['display_name'],
             'department' => $user['department'] ?? '',
         ];
+    }
+
+    function record_activity(PDO $pdo, array $user, string $action, string $details = ''): void
+    {
+        if (!in_array($user['role'] ?? '', ['admin', 'dean'], true)) {
+            return;
+        }
+        $statement = $pdo->prepare(
+            'INSERT INTO activity_logs (user_id, actor_name, actor_role, action, details)
+             VALUES (?, ?, ?, ?, ?)'
+        );
+        $statement->execute([
+            (int) $user['id'],
+            (string) ($user['displayName'] ?? $user['display_name'] ?? $user['username'] ?? 'Unknown'),
+            (string) $user['role'],
+            $action,
+            substr($details, 0, 255),
+        ]);
+    }
+
+    function period_state(array $period, int $now): string
+    {
+        $startsAt = strtotime((string) $period['starts_at'] . ' UTC');
+        $endsAt = strtotime((string) $period['ends_at'] . ' UTC');
+        if ($startsAt !== false && $now < $startsAt) {
+            return 'Pending';
+        }
+        if (($period['status'] ?? '') === 'open' && $endsAt !== false && $now <= $endsAt) {
+            return 'Ongoing';
+        }
+        return 'Completed';
     }
 
     function valid_department(PDO $pdo, string $department): bool
@@ -332,6 +366,191 @@ try {
         send_json(['status' => 'ok']);
     }
 
+    if ($method === 'GET' && $route === '/dashboard/metrics') {
+        $dashboardUser = require_user($user, ['admin', 'dean']);
+        if ($dashboardUser['role'] === 'dean' && $dashboardUser['department'] === '') {
+            fail_request(403, 'Assign this Dean account to a department before viewing evaluation monitoring.');
+        }
+        $periods = $pdo->query(
+            'SELECT id, name, semester, academic_year, starts_at, ends_at, status
+             FROM evaluation_periods ORDER BY starts_at DESC'
+        )->fetchAll();
+        $eligibleQuery = $pdo->prepare(
+            "SELECT COUNT(*)
+             FROM teacher_subjects a
+             JOIN teachers t ON t.id = a.teacher_id
+             LEFT JOIN departments td ON td.id = t.department_id
+             JOIN subjects s ON s.id = a.subject_id
+             LEFT JOIN departments sd ON sd.id = s.department_id
+             CROSS JOIN students st
+             JOIN users student_user ON student_user.id = st.user_id
+                 AND student_user.role = 'student' AND student_user.active = 1
+             WHERE (a.semester = '' OR a.semester = ?)
+               AND (a.academic_year = '' OR a.academic_year = ?)
+               AND (? = '' OR CASE
+                   WHEN COALESCE(td.name, t.department) = '' THEN COALESCE(sd.name, s.department)
+                   ELSE COALESCE(td.name, t.department) END = ?)
+               AND (
+                   EXISTS (
+                       SELECT 1 FROM student_subjects direct_subject
+                       WHERE direct_subject.student_user_id = st.user_id
+                         AND direct_subject.subject_id = a.subject_id
+                   )
+                   OR (
+                       NOT EXISTS (
+                           SELECT 1 FROM student_subjects assigned_subject
+                           WHERE assigned_subject.student_user_id = st.user_id
+                       )
+                       AND (
+                           (
+                               (a.year_level = '' OR a.year_level = st.year_level)
+                               AND EXISTS (
+                                   SELECT 1 FROM course_subjects cs
+                                   WHERE cs.course_id = st.course_id
+                                     AND cs.subject_id = a.subject_id
+                               )
+                           )
+                           OR st.course_id IS NULL
+                       )
+                   )
+               )"
+        );
+        $completedQuery = $pdo->prepare(
+            "SELECT COUNT(*)
+             FROM evaluation_duplicate_guards g
+             JOIN teachers t ON t.id = g.teacher_id
+             LEFT JOIN departments td ON td.id = t.department_id
+             JOIN subjects s ON s.id = g.subject_id
+             LEFT JOIN departments sd ON sd.id = s.department_id
+             WHERE g.period_id = ? AND (? = '' OR CASE
+                 WHEN COALESCE(td.name, t.department) = '' THEN COALESCE(sd.name, s.department)
+                 ELSE COALESCE(td.name, t.department) END = ?)"
+        );
+        $progress = [];
+        $totalEligible = 0;
+        $totalCompleted = 0;
+        $now = time();
+        foreach ($periods as $period) {
+            $department = $dashboardUser['role'] === 'dean' ? $dashboardUser['department'] : '';
+            $eligibleQuery->execute([
+                $period['semester'],
+                $period['academic_year'],
+                $department,
+                $department,
+            ]);
+            $eligible = (int) $eligibleQuery->fetchColumn();
+            $completedQuery->execute([(int) $period['id'], $department, $department]);
+            $completed = min((int) $completedQuery->fetchColumn(), $eligible);
+            $pending = max(0, $eligible - $completed);
+            $totalEligible += $eligible;
+            $totalCompleted += $completed;
+            $progress[] = [
+                'id' => (int) $period['id'],
+                'name' => $period['name'],
+                'semester' => $period['semester'],
+                'academicYear' => $period['academic_year'],
+                'startsAt' => iso_datetime($period['starts_at']),
+                'endsAt' => iso_datetime($period['ends_at']),
+                'status' => period_state($period, $now),
+                'eligible' => $eligible,
+                'completed' => $completed,
+                'pending' => $pending,
+                'participationPercentage' => $eligible ? round($completed * 100 / $eligible, 1) : 0,
+            ];
+        }
+        $ongoingPeriods = count(array_filter($progress, static fn(array $period): bool => $period['status'] === 'Ongoing'));
+        $completedPeriods = count(array_filter($progress, static fn(array $period): bool => $period['status'] === 'Completed'));
+        send_json([
+            'periods' => $progress,
+            'pendingEvaluations' => array_sum(array_column($progress, 'pending')),
+            'ongoingPeriods' => $ongoingPeriods,
+            'completedPeriods' => $completedPeriods,
+            'participationPercentage' => $totalEligible
+                ? round($totalCompleted * 100 / $totalEligible, 1)
+                : 0,
+        ]);
+    }
+
+    if ($method === 'GET' && $route === '/admin/activity') {
+        $admin = require_user($user, ['admin']);
+        $statement = $pdo->query(
+            'SELECT actor_name AS actor, actor_role AS role, action, details,
+                    created_at AS createdAt
+             FROM activity_logs ORDER BY id DESC LIMIT 20'
+        );
+        $activities = $statement->fetchAll();
+        foreach ($activities as &$activity) {
+            $activity['createdAt'] = iso_datetime($activity['createdAt']);
+        }
+        unset($activity);
+        send_json($activities);
+    }
+
+    if ($method === 'GET' && $route === '/admin/settings/system') {
+        require_user($user, ['admin']);
+        $statement = $pdo->query(
+            "SELECT setting_key, setting_value FROM system_settings
+             WHERE setting_key IN ('school_name', 'academic_year', 'semester', 'deadline_notice_days')"
+        );
+        $settings = [
+            'schoolName' => 'OLPC-SMI Online Teachers Evaluation System',
+            'academicYear' => '',
+            'semester' => '1st Semester',
+            'deadlineNoticeDays' => '3',
+        ];
+        $keys = [
+            'school_name' => 'schoolName',
+            'academic_year' => 'academicYear',
+            'semester' => 'semester',
+            'deadline_notice_days' => 'deadlineNoticeDays',
+        ];
+        foreach ($statement as $setting) {
+            if (isset($keys[$setting['setting_key']])) {
+                $settings[$keys[$setting['setting_key']]] = $setting['setting_value'];
+            }
+        }
+        send_json($settings);
+    }
+
+    if ($method === 'PUT' && $route === '/admin/settings/system') {
+        $admin = require_user($user, ['admin']);
+        $body = request_body();
+        $schoolName = trim((string) ($body['schoolName'] ?? ''));
+        $academicYear = trim((string) ($body['academicYear'] ?? ''));
+        $semester = (string) ($body['semester'] ?? '');
+        $noticeDays = filter_var($body['deadlineNoticeDays'] ?? null, FILTER_VALIDATE_INT);
+        if (strlen($schoolName) < 2 || strlen($schoolName) > 160
+            || strlen($academicYear) > 32
+            || !in_array($semester, ['1st Semester', '2nd Semester', 'Summer'], true)
+            || $noticeDays === false || $noticeDays < 0 || $noticeDays > 30) {
+            fail_request(400, 'Provide a school name, valid semester, academic year, and deadline notice range from 0 to 30 days.');
+        }
+        $values = [
+            'school_name' => $schoolName,
+            'academic_year' => $academicYear,
+            'semester' => $semester,
+            'deadline_notice_days' => (string) $noticeDays,
+        ];
+        try {
+            $pdo->beginTransaction();
+            $upsert = $pdo->prepare(
+                'INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?)
+                 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)'
+            );
+            foreach ($values as $key => $value) {
+                $upsert->execute([$key, $value]);
+            }
+            $pdo->commit();
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        }
+        record_activity($pdo, $admin, 'system.settings.updated', 'Updated school and evaluation defaults.');
+        send_json(['status' => 'updated']);
+    }
+
     if ($method === 'GET' && $route === '/auth/me') {
         $authenticated = require_user($user);
         send_json(['user' => public_user($authenticated), 'csrfToken' => $_SESSION['csrf_token'] ?? '']);
@@ -399,7 +618,7 @@ try {
     }
 
     if ($route === '/admin/departments') {
-        require_user($user, ['admin']);
+        $admin = require_user($user, ['admin']);
         if ($method === 'GET') {
             send_json($pdo->query('SELECT id, name FROM departments ORDER BY name')->fetchAll());
         }
@@ -417,12 +636,13 @@ try {
                 }
                 throw $error;
             }
+            record_activity($pdo, $admin, 'department.created', 'Created department ' . $name . '.');
             send_json(['status' => 'created', 'id' => (int) $pdo->lastInsertId()], 201);
         }
     }
 
     if (preg_match('~^/admin/departments/(\d+)$~', $route, $match)) {
-        require_user($user, ['admin']);
+        $admin = require_user($user, ['admin']);
         $departmentId = (int) $match[1];
         if ($method === 'PUT' || $method === 'PATCH') {
             $name = trim((string) (request_body()['name'] ?? ''));
@@ -445,6 +665,7 @@ try {
                     fail_request(404, 'Department not found.');
                 }
             }
+            record_activity($pdo, $admin, 'department.updated', 'Updated department ' . $departmentId . '.');
             send_json(['status' => 'updated']);
         }
         if ($method === 'DELETE') {
@@ -453,6 +674,7 @@ try {
             if (!$delete->rowCount()) {
                 fail_request(404, 'Department not found.');
             }
+            record_activity($pdo, $admin, 'department.deleted', 'Deleted department ' . $departmentId . '.');
             send_json(['status' => 'deleted']);
         }
     }
@@ -495,6 +717,16 @@ try {
             ))';
             $teacherValues = array_fill(0, 4, $authenticated['id']);
             $subjectValues = array_fill(0, 3, $authenticated['id']);
+        } elseif ($authenticated['role'] === 'dean') {
+            if ($authenticated['department'] === '') {
+                $teacherSql .= ' WHERE 1 = 0';
+                $subjectSql .= ' WHERE 1 = 0';
+            } else {
+                $teacherSql .= ' WHERE COALESCE(departments.name, teachers.department) = ?';
+                $subjectSql .= ' WHERE COALESCE(departments.name, subjects.department) = ?';
+                $teacherValues[] = $authenticated['department'];
+                $subjectValues[] = $authenticated['department'];
+            }
         }
         $teachersQuery = $pdo->prepare($teacherSql . ' ORDER BY name');
         $teachersQuery->execute($teacherValues);
@@ -559,6 +791,15 @@ try {
                                 WHERE unassigned.user_id = ? AND unassigned.course_id IS NULL))
             )";
             $assignmentValues = array_fill(0, 6, $authenticated['id']);
+        } elseif ($authenticated['role'] === 'dean') {
+            if ($authenticated['department'] === '') {
+                $assignmentSql .= ' WHERE 1 = 0';
+            } else {
+                $assignmentSql .= " WHERE CASE
+                    WHEN COALESCE(td.name, t.department) = '' THEN COALESCE(sd.name, s.department)
+                    ELSE COALESCE(td.name, t.department) END = ?";
+                $assignmentValues[] = $authenticated['department'];
+            }
         }
         $assignmentSql .= ' ORDER BY t.name, s.name';
         $assignmentQuery = $pdo->prepare($assignmentSql);
@@ -610,6 +851,17 @@ try {
             $departmentRecord['id'] = (int) $departmentRecord['id'];
         }
         unset($departmentRecord);
+        if ($authenticated['role'] === 'dean') {
+            $departments = array_values(array_filter(
+                $departments,
+                static fn(array $departmentRecord): bool => $departmentRecord['name'] === $authenticated['department']
+            ));
+        }
+        $noticeDays = $pdo->prepare(
+            "SELECT setting_value FROM system_settings WHERE setting_key = 'deadline_notice_days'"
+        );
+        $noticeDays->execute();
+        $deadlineNoticeDays = $noticeDays->fetchColumn();
         send_json([
             'teachers' => $teachers,
             'subjects' => $subjects,
@@ -618,6 +870,8 @@ try {
             'courseSubjects' => $courseSubjects,
             'studentCourse' => $studentCourse,
             'studentDepartment' => $authenticated['role'] === 'student' ? $authenticated['department'] : '',
+            'scopeDepartment' => in_array($authenticated['role'], ['student', 'dean'], true) ? $authenticated['department'] : '',
+            'deadlineNoticeDays' => $deadlineNoticeDays === false ? 3 : max(0, min(30, (int) $deadlineNoticeDays)),
             'periods' => $periods,
             'departments' => $departments,
         ]);
@@ -758,8 +1012,14 @@ try {
     }
 
     if ($method === 'GET' && $route === '/reports/filters') {
-        require_user($user, ['admin', 'dean']);
-        $reports = evaluation_reports($pdo, []);
+        $reportUser = require_user($user, ['admin', 'dean']);
+        if ($reportUser['role'] === 'dean' && $reportUser['department'] === '') {
+            fail_request(403, 'Assign this Dean account to a department before viewing evaluation reports.');
+        }
+        $reports = evaluation_reports(
+            $pdo,
+            $reportUser['role'] === 'dean' ? ['department' => $reportUser['department']] : []
+        );
         $filters = ['teacher' => [], 'subject' => [], 'department' => [], 'period' => [], 'semester' => [], 'academicYear' => []];
         foreach ($reports as $report) {
             foreach (['teacher', 'subject', 'department', 'period', 'semester', 'academicYear'] as $field) {
@@ -777,11 +1037,18 @@ try {
 
     if ($method === 'GET' && $route === '/reports') {
         $reportUser = require_user($user, ['admin', 'dean']);
+        if ($reportUser['role'] === 'dean' && $reportUser['department'] === '') {
+            fail_request(403, 'Assign this Dean account to a department before viewing evaluation reports.');
+        }
         $filters = [];
         foreach (['teacher', 'department', 'subject', 'period', 'semester', 'academicYear'] as $filter) {
             if (isset($_GET[$filter]) && $_GET[$filter] !== '') {
                 $filters[$filter] = (string) $_GET[$filter];
             }
+        }
+        if ($reportUser['role'] === 'dean') {
+            $filters['department'] = $reportUser['department'];
+            record_activity($pdo, $reportUser, 'reports.viewed', 'Viewed authorized department evaluation results.');
         }
         send_json(evaluation_reports($pdo, $filters));
     }
@@ -816,10 +1083,14 @@ try {
 
     if ($method === 'POST' && $route === '/reports/submit') {
         $reportUser = require_user($user, ['admin', 'dean']);
+        if ($reportUser['role'] === 'dean' && $reportUser['department'] === '') {
+            fail_request(403, 'Assign this Dean account to a department before viewing evaluation reports.');
+        }
+        $filters = $reportUser['role'] === 'dean' ? ['department' => $reportUser['department']] : [];
         send_json([
             'status' => 'submitted',
             'submitted_at' => gmdate('Y-m-d\TH:i:s\Z'),
-            'reports' => evaluation_reports($pdo, []),
+            'reports' => evaluation_reports($pdo, $filters),
             'submitted_by' => $reportUser['displayName'],
         ]);
     }
@@ -835,7 +1106,7 @@ try {
     }
 
     if ($method === 'PUT' && $route === '/admin/settings/questions') {
-        require_user($user, ['admin']);
+        $admin = require_user($user, ['admin']);
         $questions = request_body()['questions'] ?? null;
         if (!is_array($questions) || count($questions) !== 29) {
             fail_request(400, 'Provide all 29 evaluation questions.');
@@ -879,11 +1150,12 @@ try {
             }
             throw $error;
         }
+        record_activity($pdo, $admin, 'evaluation.questions.updated', 'Updated evaluation question wording.');
         send_json(['status' => 'updated', 'questions' => get_questions($pdo)]);
     }
 
     if ($method === 'PUT' && $route === '/admin/settings/criteria') {
-        require_user($user, ['admin']);
+        $admin = require_user($user, ['admin']);
         $criteria = request_body()['criteria'] ?? null;
         if (!is_array($criteria) || count($criteria) < 1 || count($criteria) > 20) {
             fail_request(400, 'Provide 1 to 20 evaluation criteria.');
@@ -923,6 +1195,7 @@ try {
             }
             throw $error;
         }
+        record_activity($pdo, $admin, 'evaluation.criteria.updated', 'Updated evaluation criteria.');
         send_json(['status' => 'updated', 'criteria' => get_criteria($pdo)]);
     }
 
@@ -930,13 +1203,15 @@ try {
         require_user($user, ['admin']);
         $statement = $pdo->query(
             "SELECT u.id, u.username, u.role, u.display_name,
-                    COALESCE(d.name, u.department) AS department, u.active, u.created_at,
+                    COALESCE(NULLIF(deans.department, ''), d.name, u.department) AS department,
+                    u.active, u.created_at,
                     s.student_number, s.course_id, COALESCE(c.course_name, s.course) AS course,
                     c.course_code AS course_code, s.year_level, d.id AS department_id
              FROM users u
              LEFT JOIN students s ON s.user_id = u.id
              LEFT JOIN courses c ON c.id = s.course_id
              LEFT JOIN departments d ON d.id = u.department_id
+             LEFT JOIN deans ON deans.user_id = u.id
              ORDER BY u.role, u.display_name"
         );
         $accounts = $statement->fetchAll();
@@ -956,13 +1231,13 @@ try {
     }
 
     if ($method === 'POST' && $route === '/admin/users') {
-        require_user($user, ['admin']);
+        $admin = require_user($user, ['admin']);
         $body = request_body();
         $username = trim((string) ($body['username'] ?? ''));
         $password = (string) ($body['password'] ?? '');
         $role = (string) ($body['role'] ?? '');
         $displayName = trim((string) ($body['displayName'] ?? ''));
-        $department = $role === 'dean' ? '' : trim((string) ($body['department'] ?? ''));
+        $department = trim((string) ($body['department'] ?? ''));
         $studentNumber = trim((string) ($body['studentNumber'] ?? ''));
         $courseValue = $body['courseId'] ?? null;
         $courseId = $courseValue === null || $courseValue === '' ? null : filter_var($courseValue, FILTER_VALIDATE_INT);
@@ -980,7 +1255,7 @@ try {
             $normalizedSubjectIds[$id] = $id;
         }
         $subjectIds = array_values($normalizedSubjectIds);
-        if (!preg_match('/^[a-zA-Z0-9._-]{3,64}$/', $username) || strlen($password) < 12 || strlen($password) > 256 || !in_array($role, ['admin', 'dean', 'student'], true) || strlen($displayName) < 2 || strlen($displayName) > 120 || !valid_department($pdo, $department) || ($role === 'student' && (strlen($studentNumber) < 1 || strlen($studentNumber) > 64 || ($courseId !== null && $courseId === false) || strlen($yearLevel) > 32))) {
+        if (!preg_match('/^[a-zA-Z0-9._-]{3,64}$/', $username) || strlen($password) < 12 || strlen($password) > 256 || !in_array($role, ['admin', 'dean', 'student'], true) || strlen($displayName) < 2 || strlen($displayName) > 120 || !valid_department($pdo, $department) || ($role === 'dean' && $department === '') || ($role === 'student' && (strlen($studentNumber) < 1 || strlen($studentNumber) > 64 || ($courseId !== null && $courseId === false) || strlen($yearLevel) > 32))) {
             fail_request(400, 'Provide a valid username, password (at least 12 characters), role, and display name.');
         }
         $courseName = '';
@@ -1034,6 +1309,7 @@ try {
             }
             throw $error;
         }
+        record_activity($pdo, $admin, 'account.created', 'Created ' . $role . ' account ' . $newUserId . '.');
         send_json(['status' => 'created'], 201);
     }
 
@@ -1057,6 +1333,7 @@ try {
                     fail_request(404, 'Account not found.');
                 }
             }
+            record_activity($pdo, $admin, 'account.status.updated', 'Changed account status for account ' . $accountId . '.');
             send_json(['status' => 'updated']);
         }
         if ($method === 'DELETE') {
@@ -1078,6 +1355,7 @@ try {
             }
             $delete = $pdo->prepare('DELETE FROM users WHERE id = ?');
             $delete->execute([$accountId]);
+            record_activity($pdo, $admin, 'account.deleted', 'Deleted ' . $role . ' account ' . $accountId . '.');
             send_json(['status' => 'deleted']);
         }
         if ($method === 'PUT') {
@@ -1098,8 +1376,8 @@ try {
                 fail_request(404, 'Account not found.');
             }
             $role = $account['role'];
-            $department = $role === 'dean' ? '' : trim((string) ($body['department'] ?? ''));
-            if (!valid_department($pdo, $department)) {
+            $department = trim((string) ($body['department'] ?? ''));
+            if (!valid_department($pdo, $department) || ($role === 'dean' && $department === '')) {
                 fail_request(400, 'Choose an existing department for this account.');
             }
             $studentNumber = trim((string) ($body['studentNumber'] ?? $account['student_number'] ?? $account['username']));
@@ -1190,12 +1468,13 @@ try {
             if ($accountId === (int) $admin['id']) {
                 $_SESSION['user_name'] = $displayName;
             }
+            record_activity($pdo, $admin, 'account.updated', 'Updated ' . $role . ' account ' . $accountId . '.');
             send_json(['status' => 'updated']);
         }
     }
 
     if ($route === '/admin/courses' && in_array($method, ['POST'], true)) {
-        require_user($user, ['admin']);
+        $admin = require_user($user, ['admin']);
         $body = request_body();
         $courseCode = trim((string) ($body['courseCode'] ?? ''));
         $courseName = trim((string) ($body['courseName'] ?? ''));
@@ -1231,11 +1510,12 @@ try {
             }
             throw $error;
         }
+        record_activity($pdo, $admin, 'course.created', 'Created course ' . $courseName . '.');
         send_json(['status' => 'created', 'id' => $courseId], 201);
     }
 
     if (preg_match('~^/admin/courses/(\d+)$~', $route, $match)) {
-        require_user($user, ['admin']);
+        $admin = require_user($user, ['admin']);
         $courseId = (int) $match[1];
         if ($method === 'PUT') {
             $body = request_body();
@@ -1281,6 +1561,7 @@ try {
                 }
                 throw $error;
             }
+            record_activity($pdo, $admin, 'course.updated', 'Updated course ' . $courseId . '.');
             send_json(['status' => 'updated']);
         }
         if ($method === 'DELETE') {
@@ -1289,12 +1570,13 @@ try {
             if (!$delete->rowCount()) {
                 fail_request(404, 'Course not found.');
             }
+            record_activity($pdo, $admin, 'course.deleted', 'Deleted course ' . $courseId . '.');
             send_json(['status' => 'deleted']);
         }
     }
 
     if ($method === 'POST' && $route === '/admin/subjects') {
-        require_user($user, ['admin']);
+        $admin = require_user($user, ['admin']);
         $body = request_body();
         $subjectCode = trim((string) ($body['subjectCode'] ?? ''));
         $name = trim((string) ($body['name'] ?? ''));
@@ -1346,11 +1628,12 @@ try {
             }
             throw $error;
         }
+        record_activity($pdo, $admin, 'subject.created', 'Created or assigned subject ' . $name . '.');
         send_json(['status' => 'created'], 201);
     }
 
     if ($route === '/admin/assignments' && $method === 'POST') {
-        require_user($user, ['admin']);
+        $admin = require_user($user, ['admin']);
         $body = request_body();
         $teacherId = filter_var($body['teacherId'] ?? null, FILTER_VALIDATE_INT);
         $subjectId = filter_var($body['subjectId'] ?? null, FILTER_VALIDATE_INT);
@@ -1374,11 +1657,12 @@ try {
             }
             throw $error;
         }
+        record_activity($pdo, $admin, 'assignment.created', 'Created teacher-subject assignment.');
         send_json(['status' => 'created'], 201);
     }
 
     if (preg_match('~^/admin/assignments/(\d+)$~', $route, $match)) {
-        require_user($user, ['admin']);
+        $admin = require_user($user, ['admin']);
         $assignmentId = (int) $match[1];
         if ($method === 'PUT') {
             $body = request_body();
@@ -1413,6 +1697,7 @@ try {
                     fail_request(404, 'Teacher assignment not found.');
                 }
             }
+            record_activity($pdo, $admin, 'assignment.updated', 'Updated teacher-subject assignment ' . $assignmentId . '.');
             send_json(['status' => 'updated']);
         }
         if ($method === 'DELETE') {
@@ -1421,12 +1706,13 @@ try {
             if (!$statement->rowCount()) {
                 fail_request(404, 'Teacher assignment not found.');
             }
+            record_activity($pdo, $admin, 'assignment.deleted', 'Deleted teacher-subject assignment ' . $assignmentId . '.');
             send_json(['status' => 'deleted']);
         }
     }
 
     if (preg_match('~^/admin/subjects/(\d+)$~', $route, $match)) {
-        require_user($user, ['admin']);
+        $admin = require_user($user, ['admin']);
         $subjectId = (int) $match[1];
         if ($method === 'PUT') {
             $body = request_body();
@@ -1456,6 +1742,7 @@ try {
                     fail_request(404, 'Subject not found.');
                 }
             }
+            record_activity($pdo, $admin, 'subject.updated', 'Updated subject ' . $subjectId . '.');
             send_json(['status' => 'updated']);
         }
         if ($method === 'DELETE') {
@@ -1464,12 +1751,13 @@ try {
             if (!$delete->rowCount()) {
                 fail_request(404, 'Subject not found.');
             }
+            record_activity($pdo, $admin, 'subject.deleted', 'Deleted subject ' . $subjectId . '.');
             send_json(['status' => 'deleted']);
         }
     }
 
     if ($route === '/admin/teachers' && $method === 'POST') {
-        require_user($user, ['admin']);
+        $admin = require_user($user, ['admin']);
         $body = request_body();
         $teacherCode = trim((string) ($body['teacherCode'] ?? ''));
         $name = trim((string) ($body['name'] ?? ''));
@@ -1490,11 +1778,12 @@ try {
             }
             throw $error;
         }
+        record_activity($pdo, $admin, 'teacher.created', 'Created teacher record ' . $teacherCode . '.');
         send_json(['status' => 'created'], 201);
     }
 
     if (preg_match('~^/admin/teachers/(\d+)$~', $route, $match)) {
-        require_user($user, ['admin']);
+        $admin = require_user($user, ['admin']);
         $teacherId = (int) $match[1];
         if ($method === 'PATCH') {
             $body = request_body();
@@ -1524,6 +1813,7 @@ try {
                     fail_request(404, 'Teacher not found.');
                 }
             }
+            record_activity($pdo, $admin, 'teacher.updated', 'Updated teacher record ' . $teacherId . '.');
             send_json(['status' => 'updated']);
         }
         if ($method === 'DELETE') {
@@ -1532,12 +1822,13 @@ try {
             if (!$statement->rowCount()) {
                 fail_request(404, 'Teacher not found.');
             }
+            record_activity($pdo, $admin, 'teacher.deleted', 'Deleted teacher record ' . $teacherId . '.');
             send_json(['status' => 'deleted']);
         }
     }
 
     if ($method === 'POST' && $route === '/admin/periods') {
-        require_user($user, ['admin']);
+        $admin = require_user($user, ['admin']);
         $body = request_body();
         $name = trim((string) ($body['name'] ?? ''));
         $semester = (string) ($body['semester'] ?? '');
@@ -1568,11 +1859,12 @@ try {
             }
             throw $error;
         }
+        record_activity($pdo, $admin, 'evaluation.period.created', 'Created evaluation period ' . $name . '.');
         send_json(['status' => 'created'], 201);
     }
 
     if (preg_match('~^/admin/periods/(\d+)$~', $route, $match) && $method === 'PATCH') {
-        require_user($user, ['admin']);
+        $admin = require_user($user, ['admin']);
         $periodId = (int) $match[1];
         $body = request_body();
         $status = $body['status'] ?? null;
@@ -1596,6 +1888,7 @@ try {
             $update = $pdo->prepare('UPDATE evaluation_periods SET status = ? WHERE id = ?');
             $update->execute([$status, $periodId]);
             $pdo->commit();
+            record_activity($pdo, $admin, 'evaluation.period.status.updated', 'Set period ' . $periodId . ' to ' . $status . '.');
             send_json(['status' => 'updated']);
         }
 
@@ -1636,6 +1929,7 @@ try {
             }
             throw $error;
         }
+        record_activity($pdo, $admin, 'evaluation.period.updated', 'Updated evaluation period ' . $periodId . '.');
         send_json(['status' => 'updated']);
     }
 

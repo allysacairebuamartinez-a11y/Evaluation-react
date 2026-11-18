@@ -1,7 +1,7 @@
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createDemoApi } from "./demo-api";
-import { BarChart3, BookOpen, CalendarDays, Check, ClipboardCheck, Download, FileText, LogIn, Printer, Search, ShieldCheck, Users } from "lucide-react";
+import { BarChart3, BookOpen, CalendarDays, Check, ClipboardCheck, Download, Eye, EyeOff, FileText, LogIn, Printer, Search, Settings, ShieldCheck, Users } from "lucide-react";
 import "./flow.css";
 import "./flow-extra.css";
 const API = "/api";
@@ -79,6 +79,13 @@ function asDateTimeLocal(value) {
   const date = new Date(value);
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 }
+function getEvaluationStatus(period, now = Date.now()) {
+  const startsAt = Date.parse(period.starts_at);
+  const endsAt = Date.parse(period.ends_at);
+  if (startsAt > now) return "Pending";
+  if (period.status === "open" && endsAt >= now) return "Ongoing";
+  return "Completed";
+}
 function App() {
   const demoApi = useRef(null);
   if (!demoApi.current) demoApi.current = createDemoApi(QUESTION_DATA, DEFAULT_CRITERIA);
@@ -86,6 +93,7 @@ function App() {
   const [loginName, setLoginName] = useState("");
   const [selectedRole, setSelectedRole] = useState("");
   const [password, setPassword] = useState("");
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [user, setUser] = useState(null);
   const [demoMode, setDemoMode] = useState(false);
   const [csrfToken, setCsrfToken] = useState("");
@@ -93,6 +101,7 @@ function App() {
   const [authError, setAuthError] = useState("");
   const [busy, setBusy] = useState(false);
   const [evaluationSubmitting, setEvaluationSubmitting] = useState(false);
+  const [evaluationConfirmation, setEvaluationConfirmation] = useState(null);
   const evaluationSubmissionLock = useRef(false);
   const [notice, setNotice] = useState("");
   const [responses, setResponses] = useState([]);
@@ -196,6 +205,16 @@ function App() {
       return;
     }
     if (DEMO_MODE) {
+      const demoRoles = { "admin.demo": "admin", "dean.demo": "dean", "student.demo": "student" };
+      const demoRole = demoRoles[trimmedUsername.toLowerCase()];
+      if (!demoRole) {
+        setAuthError("Use admin.demo, dean.demo, or student.demo for the selected role.");
+        return;
+      }
+      if (demoRole !== selectedRole) {
+        setAuthError("The selected role does not match this demo account.");
+        return;
+      }
       setBusy(true);
       setAuthError("");
       try {
@@ -203,10 +222,10 @@ function App() {
         setDemoMode(true);
         setUser({
           id: 0,
-          username: trimmedUsername || "demo",
-          displayName: trimmedUsername || `Demo ${roles[selectedRole].label}`,
-          role: selectedRole,
-          department: selectedRole === "dean" ? "" : "College of Teacher Education"
+          username: trimmedUsername,
+          displayName: `Demo ${roles[demoRole].label}`,
+          role: demoRole,
+          department: "College of Teacher Education"
         });
         setPassword("");
         setStep(1);
@@ -247,7 +266,7 @@ function App() {
       setBusy(false);
     }
   };
-  const submit = async (event) => {
+  const submit = (event) => {
     event.preventDefault();
     const teacher = form.teacher.trim();
     const subject = form.subject.trim();
@@ -272,23 +291,37 @@ function App() {
     }
     const period = catalog.periods.find((item) => String(item.id) === form.periodId);
     if (evaluationSubmissionLock.current) return;
-    if (!window.confirm(`Submit your evaluation for ${teacher} in ${subject} for ${period?.name || "this evaluation period"}? You cannot edit or submit it again after confirmation.`)) {
-      return;
-    }
+    setEvaluationConfirmation({
+      teacher,
+      subject,
+      period: period?.name || "this evaluation period",
+      periodId: Number(form.periodId),
+      ratings: { ...form.ratings }
+    });
+  };
+  const confirmEvaluationSubmission = async () => {
+    const confirmation = evaluationConfirmation;
+    if (!confirmation || evaluationSubmissionLock.current) return;
     evaluationSubmissionLock.current = true;
     setEvaluationSubmitting(true);
     try {
       await apiRequest("/responses", {
         method: "POST",
-        body: JSON.stringify({ teacher, subject, periodId: Number(form.periodId), ratings: form.ratings })
+        body: JSON.stringify({
+          teacher: confirmation.teacher,
+          subject: confirmation.subject,
+          periodId: confirmation.periodId,
+          ratings: confirmation.ratings
+        })
       });
+      setEvaluationConfirmation(null);
       setStep(3);
       setForm({ teacher: "", subject: "", periodId: "", ratings: buildInitialRatings() });
       setSubmissions((current) => [...current, {
-        teacher,
-        subject,
-        period: period?.name || "",
-        periodId: Number(form.periodId)
+        teacher: confirmation.teacher,
+        subject: confirmation.subject,
+        period: confirmation.period,
+        periodId: confirmation.periodId
       }]);
       flash("Evaluation submitted successfully.");
       try {
@@ -297,6 +330,7 @@ function App() {
         flash(`Your evaluation was submitted, but status could not be refreshed: ${error instanceof Error ? error.message : "Please reload the page."}`);
       }
     } catch (error) {
+      setEvaluationConfirmation(null);
       flash(error instanceof Error ? error.message : "Unable to submit evaluation.");
     } finally {
       evaluationSubmissionLock.current = false;
@@ -317,6 +351,7 @@ function App() {
     setLoginName("");
     setSelectedRole("");
     setPassword("");
+    setPasswordVisible(false);
     setResponses([]);
     setCatalog({ teachers: [], subjects: [], assignments: [], courses: [], courseSubjects: [], studentCourse: null, periods: [], departments: [] });
   };
@@ -336,10 +371,13 @@ function App() {
         setSelectedRole: (role) => {
           setSelectedRole(role);
           setAuthError("");
+          if (DEMO_MODE) setLoginName(`${role}.demo`);
         },
         demoMode: DEMO_MODE,
         password,
         setPassword,
+        passwordVisible,
+        setPasswordVisible,
         login,
         busy,
         error: authError
@@ -367,12 +405,67 @@ function App() {
     ] }),
     user.role === "student" && /* @__PURE__ */ jsx(ClientFlow, { step, setStep, form, setForm, submit, catalog, submissions, questions, criteria, evaluationSubmitting }),
     (user.role === "admin" || user.role === "dean") && /* @__PURE__ */ jsx(AdminDashboard, { role: user.role, userId: user.id, responses, catalog, apiRequest, refreshCatalog: async () => setCatalog(await apiRequest("/catalog")), flash, questions, setQuestions, onAccountUpdated: (displayName, department) => setUser((current) => current ? { ...current, displayName, department } : current) }),
+    evaluationConfirmation && /* @__PURE__ */ jsx(EvaluationConfirmationDialog, {
+      evaluation: evaluationConfirmation,
+      busy: evaluationSubmitting,
+      onCancel: () => setEvaluationConfirmation(null),
+      onConfirm: () => void confirmEvaluationSubmission()
+    }),
     notice && /* @__PURE__ */ jsxs("div", { className: "toast", children: [
       /* @__PURE__ */ jsx(Check, { size: 16 }),
       " ",
       notice
     ] })
   ] });
+}
+function EvaluationConfirmationDialog({ evaluation, busy, onCancel, onConfirm }) {
+  return (
+    <div
+      className="evaluation-confirm-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !busy) onCancel();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && !busy) {
+          event.stopPropagation();
+          onCancel();
+        }
+      }}
+    >
+      <section
+        className="evaluation-confirm-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="evaluation-confirm-title"
+        aria-describedby="evaluation-confirm-description"
+      >
+        <div className="evaluation-confirm-heading">
+          <span className="evaluation-confirm-icon"><ClipboardCheck size={21} /></span>
+          <div>
+            <span className="evaluation-confirm-eyebrow">FINAL REVIEW</span>
+            <h2 id="evaluation-confirm-title">Confirm submission</h2>
+          </div>
+        </div>
+        <p id="evaluation-confirm-description" className="evaluation-confirm-description">
+          Please review these details. Submitted evaluations cannot be edited or submitted again for the same teacher, subject, and period.
+        </p>
+        <dl className="evaluation-confirm-details">
+          <div><dt>Teacher</dt><dd>{evaluation.teacher}</dd></div>
+          <div><dt>Subject</dt><dd>{evaluation.subject}</dd></div>
+          <div><dt>Evaluation period</dt><dd>{evaluation.period}</dd></div>
+        </dl>
+        <div className="evaluation-confirm-privacy"><ShieldCheck size={16} /><span>Your identity is not included in evaluation reports.</span></div>
+        <div className="evaluation-confirm-actions">
+          <button type="button" className="secondary" onClick={onCancel} disabled={busy} autoFocus>
+            Review answers
+          </button>
+          <button type="button" className="primary" onClick={onConfirm} disabled={busy}>
+            {busy ? "Submitting…" : "Confirm submission"}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
 }
 function SchoolMark({ size }) {
   return /* @__PURE__ */ jsx("img", { className: `school-mark school-mark-${size}`, src: "/olpc-logo.png", alt: "OLPC-SMI official school logo" });
@@ -399,7 +492,7 @@ function TeacherIllustration() {
     /* @__PURE__ */ jsx("path", { d: "M226 119 243 100", stroke: "#f2bd8d", strokeWidth: "5", strokeLinecap: "round" })
   ] });
 }
-function LoginScreen({ loginName, setLoginName, selectedRole, setSelectedRole, password, setPassword, login, demoMode, busy, error }) {
+function LoginScreen({ loginName, setLoginName, selectedRole, setSelectedRole, password, setPassword, passwordVisible, setPasswordVisible, login, demoMode, busy, error }) {
   return /* @__PURE__ */ jsxs("div", { className: "auth-screen", children: [
     /* @__PURE__ */ jsx("a", { className: "auth-school-logo", href: "#", "aria-label": "OLPC-SMI", children: /* @__PURE__ */ jsx(SchoolMark, { size: "large" }) }),
     /* @__PURE__ */ jsxs("div", { className: "auth-card", children: [
@@ -419,23 +512,19 @@ function LoginScreen({ loginName, setLoginName, selectedRole, setSelectedRole, p
           /* @__PURE__ */ jsx(ShieldCheck, { size: 13 }),
           demoMode ? " Demo mode" : " Secure portal"
         ] }) }),
-        /* @__PURE__ */ jsx("div", { className: "role-grid", "aria-label": "Choose your role", children: Object.entries(roles).map(([role, details]) => {
+        /* @__PURE__ */ jsx("div", { className: "role-grid", role: "group", "aria-label": "Choose your role", children: Object.entries(roles).map(([role, details]) => {
           const Icon = role === "admin" ? ShieldCheck : role === "student" ? BookOpen : BarChart3;
-          return /* @__PURE__ */ jsxs(
-            "button",
-            {
-              className: `role-button ${selectedRole === role ? "selected" : ""}`,
-              type: "button",
-              "aria-pressed": selectedRole === role,
-              onClick: () => setSelectedRole(role),
-              children: [
-                /* @__PURE__ */ jsx(Icon, { size: 16 }),
-                " ",
-                details.label
-              ]
-            },
-            role
-          );
+          return /* @__PURE__ */ jsxs("button", {
+            className: `role-button ${selectedRole === role ? "selected" : ""}`,
+            type: "button",
+            "aria-pressed": selectedRole === role,
+            onClick: () => setSelectedRole(role),
+            children: [
+              /* @__PURE__ */ jsx(Icon, { size: 16 }),
+              " ",
+              details.label
+            ]
+          }, role);
         }) }),
         /* @__PURE__ */ jsxs("label", { children: [
           "Username or school ID",
@@ -455,7 +544,13 @@ function LoginScreen({ loginName, setLoginName, selectedRole, setSelectedRole, p
         ] }),
         /* @__PURE__ */ jsxs("label", { children: [
           "Password",
-          /* @__PURE__ */ jsx("input", { autoComplete: "current-password", required: !demoMode, type: "password", maxLength: demoMode ? undefined : 256, value: password, onChange: (event) => setPassword(event.target.value), placeholder: "Enter your password" })
+          /* @__PURE__ */ jsxs("div", { className: "password-field", children: [
+            /* @__PURE__ */ jsx("input", { autoComplete: "current-password", required: !demoMode, type: passwordVisible ? "text" : "password", maxLength: demoMode ? undefined : 256, value: password, onChange: (event) => setPassword(event.target.value), placeholder: "Enter your password" }),
+            /* @__PURE__ */ jsxs("button", { type: "button", className: "password-toggle", onClick: () => setPasswordVisible(!passwordVisible), "aria-label": passwordVisible ? "Hide password" : "Show password", children: [
+              passwordVisible ? /* @__PURE__ */ jsx(EyeOff, { size: 17 }) : /* @__PURE__ */ jsx(Eye, { size: 17 }),
+              passwordVisible ? "Hide" : "Show"
+            ] })
+          ] })
         ] }),
         error && /* @__PURE__ */ jsx("div", { className: "auth-error", role: "alert", children: error }),
         /* @__PURE__ */ jsxs("button", { className: "primary full", disabled: busy, children: [
@@ -463,7 +558,7 @@ function LoginScreen({ loginName, setLoginName, selectedRole, setSelectedRole, p
           " ",
           busy ? "Signing in\u2026" : "Sign in"
         ] }),
-        /* @__PURE__ */ jsx("small", { className: "auth-help", children: demoMode ? "Demo Mode is enabled. Choose a role; credentials are not verified." : "Your role and dashboard are determined automatically from your account." })
+        /* @__PURE__ */ jsx("small", { className: "auth-help", children: demoMode ? "Choose a role or use its matching demo account: admin.demo, dean.demo, or student.demo." : "Choose the role assigned to your school account. Your permissions are verified when you sign in." })
       ] }),
     ] })
   ] });
@@ -483,7 +578,9 @@ function getScaleForQuestion(questionId) {
   return standardScale;
 }
 function ClientFlow({ step, setStep, form, setForm, submit, catalog, submissions, questions, criteria, evaluationSubmitting }) {
-  const openPeriods = catalog.periods.filter((period) => period.status === "open" && Date.parse(period.starts_at) <= Date.now() && Date.parse(period.ends_at) >= Date.now());
+  const now = Date.now();
+  const openPeriods = catalog.periods.filter((period) => period.status === "open" && Date.parse(period.starts_at) <= now && Date.parse(period.ends_at) >= now);
+  const scheduledPeriods = catalog.periods.filter((period) => period.status === "open" && Date.parse(period.starts_at) > now);
   const orderedQuestions = [...questions].sort((first, second) => first.id - second.id);
   const selectedPeriod = openPeriods.find((period) => String(period.id) === form.periodId)?.name;
   const matchesPeriod = (assignment, period) => (!assignment.semester || assignment.semester === period.semester) && (!assignment.academicYear || assignment.academicYear === period.academic_year);
@@ -507,14 +604,15 @@ function ClientFlow({ step, setStep, form, setForm, submit, catalog, submissions
     const period = catalog.periods.find((item) => String(item.id) === String(submission.periodId)) || catalog.periods.find((item) => item.name === submission.period);
     return period ? { teacher: submission.teacher, subject: submission.subject, subjects: [submission.subject], period, completed: true } : null;
   }).filter(Boolean);
-  const pendingStatus = openPeriods.flatMap((period) => {
+  const pendingStatus = [...openPeriods, ...scheduledPeriods].flatMap((period) => {
     const assignments = catalog.assignments.filter((assignment) => matchesPeriod(assignment, period));
     return assignments.filter((assignment) => !alreadySubmitted(assignment, period)).map((assignment) => ({
       teacher: assignment.teacher,
       subject: assignment.subject,
       subjects: [assignment.subject],
       period,
-      completed: false
+      completed: false,
+      status: openPeriods.some((openPeriod) => String(openPeriod.id) === String(period.id)) ? "Ongoing" : "Pending"
     }));
   });
   const evaluationStatus = [...completedStatus, ...pendingStatus].sort((first, second) =>
@@ -532,6 +630,24 @@ function ClientFlow({ step, setStep, form, setForm, submit, catalog, submissions
   const availableTeachers = [...new Set(periodAssignments
     .filter((assignment) => !selectedEvaluationPeriod || !alreadySubmitted(assignment, selectedEvaluationPeriod))
     .map((assignment) => assignment.teacher))];
+  const periodNotices = [
+    ...scheduledPeriods.map((period) => ({
+      id: `scheduled-${period.id}`,
+      message: `${period.name} is scheduled to open ${new Date(period.starts_at).toLocaleString()}.`
+    })),
+    ...openPeriods.map((period) => {
+      const remaining = pendingStatus.filter((item) => String(item.period.id) === String(period.id)).length;
+      const noticeDays = Math.max(0, Number(catalog.deadlineNoticeDays ?? 3));
+      const daysRemaining = Math.ceil((Date.parse(period.ends_at) - now) / 86400000);
+      const deadlineNotice = noticeDays > 0 && daysRemaining <= noticeDays;
+      return {
+        id: `ongoing-${period.id}`,
+        message: remaining
+          ? `${remaining} evaluation(s) are still pending for ${period.name}.${deadlineNotice ? " Deadline reminder:" : " Deadline:"} ${new Date(period.ends_at).toLocaleString()}.`
+          : `All assigned evaluations for ${period.name} are completed.`
+      };
+    })
+  ];
   return (
     <main className="flow-content">
       <span className="flow-kicker">CLIENT / STUDENT PORTAL</span>
@@ -540,6 +656,19 @@ function ClientFlow({ step, setStep, form, setForm, submit, catalog, submissions
       <Steps current={step} labels={["Login", "Instructions", "Evaluate", "Submit"]} />
       {step === 1 && (
         <div className="student-dashboard">
+          {(periodNotices.length > 0 || pendingStatus.length > 0) && (
+            <section className="flow-card dashboard-panel" aria-label="Evaluation notifications">
+              <div className="panel-heading">
+                <div>
+                  <h2>Evaluation reminders</h2>
+                  <p>{pendingStatus.length} pending or ongoing assigned evaluation(s).</p>
+                </div>
+              </div>
+              <ul className="evaluation-notices">
+                {periodNotices.map((notice) => <li key={notice.id}>{notice.message}</li>)}
+              </ul>
+            </section>
+          )}
           <section className="flow-card dashboard-panel">
             <div className="panel-heading">
               <div>
@@ -568,7 +697,7 @@ function ClientFlow({ step, setStep, form, setForm, submit, catalog, submissions
             <div className="panel-heading">
               <div>
                 <h2>My evaluation status</h2>
-                <p>Your pending evaluations and submitted evaluations, including closed periods.</p>
+                <p>Pending and ongoing assignments, plus your completed submissions.</p>
               </div>
             </div>
             {evaluationStatus.length ? (
@@ -581,7 +710,7 @@ function ClientFlow({ step, setStep, form, setForm, submit, catalog, submissions
                         <td>{item.teacher}</td>
                         <td>{item.subject}</td>
                         <td>{item.period.name}</td>
-                        <td><span className={`status-pill ${item.completed ? "muted" : ""}`}>{item.completed ? "Completed" : "Pending"}</span></td>
+                        <td><span className={`status-pill ${item.completed ? "muted" : item.status === "Ongoing" ? "ongoing" : ""}`}>{item.completed ? "Completed" : item.status}</span></td>
                         <td>
                           {!item.completed && (
                             <button
@@ -1601,9 +1730,13 @@ function AdminFlow({ role, userId, department, responses, catalog, apiRequest, r
   ] });
 }
 function AdminDashboard({ role, userId, responses, catalog, apiRequest, refreshCatalog, flash, questions, setQuestions, onAccountUpdated }) {
-  const [activePanel, setActivePanel] = useState(role === "admin" ? "dashboard" : "results");
+  const [activePanel, setActivePanel] = useState(role === "admin" ? "dashboard" : "monitor");
   const [accounts, setAccounts] = useState([]);
   const [adminEvaluations, setAdminEvaluations] = useState([]);
+  const [metrics, setMetrics] = useState({ periods: [], pendingEvaluations: 0, ongoingPeriods: 0, completedPeriods: 0, participationPercentage: 0 });
+  const [activities, setActivities] = useState([]);
+  const [systemSettings, setSystemSettings] = useState({ schoolName: "", academicYear: "", semester: "1st Semester", deadlineNoticeDays: "3" });
+  const [systemSettingsLoaded, setSystemSettingsLoaded] = useState(false);
   const [accountSearch, setAccountSearch] = useState("");
   const [teacherSearch, setTeacherSearch] = useState("");
   const [subjectSearch, setSubjectSearch] = useState("");
@@ -1676,6 +1809,18 @@ function AdminDashboard({ role, userId, responses, catalog, apiRequest, refreshC
   };
   const refreshAccounts = async () => setAccounts(await apiRequest("/admin/users"));
   const refreshAdminEvaluations = async () => setAdminEvaluations(await apiRequest("/admin/evaluations"));
+  const refreshMetrics = async () => setMetrics(await apiRequest("/dashboard/metrics"));
+  const refreshActivities = async () => setActivities(await apiRequest("/admin/activity"));
+  const refreshSystemSettings = async () => {
+    const settings = await apiRequest("/admin/settings/system");
+    setSystemSettings(settings);
+    setSystemSettingsLoaded(true);
+    setPeriodForm((current) => ({
+      ...current,
+      semester: current.semester || settings.semester,
+      academicYear: current.academicYear || settings.academicYear
+    }));
+  };
   const refreshCriteria = async () => {
     const result = await apiRequest("/settings/criteria");
     const next = result.criteria?.length ? result.criteria : DEFAULT_CRITERIA;
@@ -1686,10 +1831,24 @@ function AdminDashboard({ role, userId, responses, catalog, apiRequest, refreshC
     setQuestionTexts(questions.map(({ id, text }) => ({ id, text })));
   }, [questions]);
   useEffect(() => {
-    const tasks = [refreshCriteria()];
-    if (role === "admin") tasks.push(refreshAccounts(), refreshAdminEvaluations());
+    const tasks = [refreshCriteria(), refreshMetrics()];
+    if (role === "admin") tasks.push(refreshAccounts(), refreshAdminEvaluations(), refreshActivities(), refreshSystemSettings());
     Promise.all(tasks).catch((error) => flash(error instanceof Error ? error.message : "Unable to load management data."));
   }, [role]);
+  const saveSystemSettings = (event) => {
+    event.preventDefault();
+    void runAction(async () => {
+      await apiRequest("/admin/settings/system", {
+        method: "PUT",
+        body: JSON.stringify({
+          ...systemSettings,
+          deadlineNoticeDays: Number(systemSettings.deadlineNoticeDays)
+        })
+      });
+      await refreshSystemSettings();
+      await refreshActivities();
+    }, "School and evaluation settings saved.");
+  };
   const runAction = async (operation, successMessage) => {
     setLoading(true);
     try {
@@ -1723,13 +1882,17 @@ function AdminDashboard({ role, userId, responses, catalog, apiRequest, refreshC
       flash("Student number is required.");
       return;
     }
+    if (roleForPanel === "dean" && !accountForm.department) {
+      flash("Select the department this Dean is authorized to review.");
+      return;
+    }
     void runAction(async () => {
       if (editingAccountId) {
         await apiRequest(`/admin/users/${editingAccountId}`, {
           method: "PUT",
           body: JSON.stringify({
             displayName,
-            department: roleForPanel === "dean" ? "" : accountForm.department,
+            department: accountForm.department,
             studentNumber: accountForm.studentNumber.trim(),
             courseId: accountForm.courseId ? Number(accountForm.courseId) : null,
             yearLevel: accountForm.yearLevel.trim(),
@@ -1737,11 +1900,11 @@ function AdminDashboard({ role, userId, responses, catalog, apiRequest, refreshC
             ...(password ? { password } : {})
           })
         });
-        if (editingAccountId === userId) onAccountUpdated(displayName, roleForPanel === "dean" ? "" : accountForm.department);
+        if (editingAccountId === userId) onAccountUpdated(displayName, accountForm.department);
       } else {
         await apiRequest("/admin/users", {
           method: "POST",
-          body: JSON.stringify({ ...accountForm, username, displayName, role: roleForPanel, department: roleForPanel === "dean" ? "" : accountForm.department, password, courseId: accountForm.courseId ? Number(accountForm.courseId) : null, subjectIds: roleForPanel === "student" ? accountForm.subjectIds.map(Number) : [] })
+          body: JSON.stringify({ ...accountForm, username, displayName, role: roleForPanel, password, courseId: accountForm.courseId ? Number(accountForm.courseId) : null, subjectIds: roleForPanel === "student" ? accountForm.subjectIds.map(Number) : [] })
         });
       }
       resetAccountForm();
@@ -1953,7 +2116,7 @@ function AdminDashboard({ role, userId, responses, catalog, apiRequest, refreshC
         body: JSON.stringify({ ...periodForm, name: periodForm.name.trim(), academicYear: periodForm.academicYear.trim(), startsAt: startsAt.toISOString(), endsAt: endsAt.toISOString() })
       });
       setEditingPeriodId(null);
-      setPeriodForm({ name: "", semester: "", academicYear: "", startsAt: "", endsAt: "" });
+      setPeriodForm({ name: "", semester: systemSettings.semester, academicYear: systemSettings.academicYear, startsAt: "", endsAt: "" });
       await refreshCatalog();
     }, editingPeriodId ? "Evaluation period updated." : "Evaluation period created.");
   };
@@ -1999,8 +2162,12 @@ function AdminDashboard({ role, userId, responses, catalog, apiRequest, refreshC
     { id: "periods", label: "Evaluation periods", icon: CalendarDays },
     { id: "criteria", label: "Questions & criteria", icon: ClipboardCheck },
     { id: "evaluations", label: "Submitted evaluations", icon: FileText },
-    { id: "results", label: "Evaluation results", icon: BarChart3 }
-  ] : [{ id: "results", label: "Evaluation results", icon: BarChart3 }];
+    { id: "results", label: "Evaluation results", icon: BarChart3 },
+    { id: "settings", label: "System settings", icon: Settings }
+  ] : [
+    { id: "monitor", label: "Evaluation monitoring", icon: ClipboardCheck },
+    { id: "results", label: "Department results", icon: BarChart3 }
+  ];
   const isAccountPanel = activePanel === "students" || activePanel === "deans";
   const selectedRole = activePanel === "deans" ? "dean" : "student";
   return (
@@ -2021,7 +2188,7 @@ function AdminDashboard({ role, userId, responses, catalog, apiRequest, refreshC
         <div className="dashboard-title">
           <div>
             <h1>{nav.find((item) => item.id === activePanel)?.label}</h1>
-            <p>{role === "admin" ? "Manage school accounts, teaching resources, evaluation operations, and anonymous results." : "Review anonymous evaluation results across all departments."}</p>
+            <p>{role === "admin" ? "Manage school accounts, teaching resources, evaluation operations, and anonymous results." : `Monitor assigned evaluations and view anonymous results for ${catalog.scopeDepartment || "your authorized department"}.`}</p>
           </div>
           {role === "admin" && activePanel === "results" && (
             <div className="export-actions">
@@ -2031,6 +2198,7 @@ function AdminDashboard({ role, userId, responses, catalog, apiRequest, refreshC
           )}
           {role === "dean" && activePanel === "results" && (
             <div className="export-actions">
+              <button type="button" className="secondary" onClick={() => saveCsv(filtered, criteria)}><Download size={16} /> Export Excel / CSV</button>
               <button type="button" className="primary" onClick={printSummary}><Printer size={16} /> Print summary</button>
             </div>
           )}
@@ -2045,28 +2213,69 @@ function AdminDashboard({ role, userId, responses, catalog, apiRequest, refreshC
                 <div><span>Total Subjects</span><strong>{catalog.subjects.length}</strong><small>Course catalog</small></div>
                 <div><span>Total Deans</span><strong>{accounts.filter((item) => item.role === "dean").length}</strong><small>Dean accounts</small></div>
                 <div><span>Total Evaluations</span><strong>{totalEvaluations}</strong><small>Anonymous submissions</small></div>
+                <div><span>Pending evaluations</span><strong>{metrics.pendingEvaluations}</strong><small>Assigned and not submitted</small></div>
+                <div><span>Ongoing periods</span><strong>{metrics.ongoingPeriods}</strong><small>Currently accepting evaluations</small></div>
+                <div><span>Completed periods</span><strong>{metrics.completedPeriods}</strong><small>Schedule ended or closed</small></div>
+                <div><span>Participation</span><strong>{metrics.participationPercentage}%</strong><small>Completed / eligible evaluations</small></div>
               </> : <>
                 <div><span>Anonymous responses</span><strong>{totalResponses}</strong><small>Across current filters</small></div>
                 <div><span>Teachers evaluated</span><strong>{new Set(filtered.map((item) => item.teacher)).size}</strong><small>In selected report</small></div>
                 <div><span>Average rating</span><strong>{totalResponses ? (filtered.reduce((sum, item) => sum + item.mean * item.responses, 0) / totalResponses).toFixed(2) : "0.00"}</strong><small>Weighted by responses</small></div>
-                <div><span>Open periods</span><strong>{catalog.periods.filter((item) => item.status === "open").length}</strong><small>Currently accepting evaluations</small></div>
+                <div><span>Ongoing periods</span><strong>{metrics.ongoingPeriods}</strong><small>In your authorized department</small></div>
+                <div><span>Pending evaluations</span><strong>{metrics.pendingEvaluations}</strong><small>In your authorized department</small></div>
+                <div><span>Participation</span><strong>{metrics.participationPercentage}%</strong><small>Completed / eligible evaluations</small></div>
               </>}
             </div>
-            {role === "admin" && <section className="flow-card dashboard-panel">
-              <h2>System management</h2>
-              <p>Choose a module to manage school records. Student identities are not included in evaluation reports.</p>
-              <div className="admin-quick-actions">
-                {nav.filter((item) => item.id !== "dashboard").map(({ id, label, icon: Icon }) => (
-                  <button type="button" className="secondary" key={id} onClick={() => setActivePanel(id)}><Icon size={16} /> {label}</button>
-                ))}
-              </div>
-            </section>}
             {role === "dean" && <section className="flow-card dashboard-panel">
-              <h2>School-wide overview</h2>
-              <p>Review and print anonymous evaluation results across all departments.</p>
+              <h2>Department overview</h2>
+              <p>Monitor aggregate completion and review anonymous results for your authorized department only.</p>
+              <button type="button" className="secondary" onClick={() => setActivePanel("monitor")}>Monitor evaluations</button>
               <button type="button" className="primary" onClick={() => setActivePanel("results")}>View evaluation results</button>
             </section>}
           </>
+        )}
+
+        {role === "admin" && activePanel === "dashboard" && (
+          <section className="flow-card dashboard-panel">
+            <div className="panel-heading"><div><h2>Recent system activities</h2><p>Administrator and Dean actions are recorded for audit purposes.</p></div></div>
+            {activities.length ? (
+              <div className="table-wrap"><table><thead><tr><th>ACTOR</th><th>ROLE</th><th>ACTIVITY</th><th>DETAILS</th><th>TIME</th></tr></thead>
+                <tbody>{activities.slice(0, 10).map((activity, index) => <tr key={`${activity.createdAt}-${index}`}>
+                  <td>{activity.actor}</td><td>{roles[activity.role]?.label || activity.role}</td><td>{activity.action}</td><td>{activity.details || "—"}</td><td>{activity.createdAt ? new Date(activity.createdAt).toLocaleString() : "—"}</td>
+                </tr>)}</tbody>
+              </table></div>
+            ) : <div className="empty-state" role="status">No administrator or Dean activities have been recorded yet.</div>}
+          </section>
+        )}
+
+        {role === "dean" && activePanel === "monitor" && (
+          <section className="flow-card dashboard-panel">
+            <div className="panel-heading"><div><h2>Evaluation participation</h2><p>Department-level progress only. Student names and IDs are never shown.</p></div></div>
+            {metrics.periods.length ? (
+              <div className="table-wrap"><table><thead><tr><th>EVALUATION PERIOD</th><th>SEMESTER / YEAR</th><th>STATUS</th><th>ELIGIBLE</th><th>COMPLETED</th><th>PENDING</th><th>PARTICIPATION</th></tr></thead>
+                <tbody>{metrics.periods.map((period) => <tr key={period.id}>
+                  <td><strong>{period.name}</strong></td>
+                  <td>{[period.semester, period.academicYear].filter(Boolean).join(" · ") || "—"}</td>
+                  <td><span className={`status-pill ${getEvaluationStatus(period) === "Completed" ? "muted" : getEvaluationStatus(period) === "Ongoing" ? "ongoing" : ""}`}>{getEvaluationStatus(period)}</span></td>
+                  <td>{period.eligible}</td><td>{period.completed}</td><td>{period.pending}</td><td>{period.participationPercentage}%</td>
+                </tr>)}</tbody>
+              </table></div>
+            ) : <div className="empty-state" role="status">No evaluation periods have been scheduled.</div>}
+          </section>
+        )}
+
+        {role === "admin" && activePanel === "settings" && (
+          <section className="flow-card dashboard-panel">
+            <h2>System settings</h2>
+            <p>These values provide defaults for evaluation periods. Existing teacher, subject, and assignment records are not changed.</p>
+            <form className="management-form" onSubmit={saveSystemSettings}>
+              <label>School information<input required minLength={2} maxLength={160} value={systemSettings.schoolName} onChange={(event) => setSystemSettings({ ...systemSettings, schoolName: event.target.value })} /></label>
+              <label>Default academic year<input maxLength={32} placeholder="2026-2027" value={systemSettings.academicYear} onChange={(event) => setSystemSettings({ ...systemSettings, academicYear: event.target.value })} /></label>
+              <label>Default semester<select required value={systemSettings.semester} onChange={(event) => setSystemSettings({ ...systemSettings, semester: event.target.value })}>{SEMESTERS.map((semester) => <option key={semester}>{semester}</option>)}</select></label>
+              <label>Deadline reminder window (days)<input required type="number" min="0" max="30" value={systemSettings.deadlineNoticeDays} onChange={(event) => setSystemSettings({ ...systemSettings, deadlineNoticeDays: event.target.value })} /></label>
+              <button className="primary" disabled={loading || !systemSettingsLoaded}><Check size={16} /> Save system settings</button>
+            </form>
+          </section>
         )}
 
         {role === "admin" && isAccountPanel && (
@@ -2078,7 +2287,7 @@ function AdminDashboard({ role, userId, responses, catalog, apiRequest, refreshC
                 {!editingAccountId && <label>Username<input required minLength={3} maxLength={64} pattern="[a-zA-Z0-9._\-]+" value={accountForm.username} onChange={(event) => setAccountForm({ ...accountForm, username: event.target.value })} /></label>}
                 <label>{editingAccountId ? "New password (optional)" : "Temporary password"}<input type="password" autoComplete="new-password" required={!editingAccountId} minLength={12} maxLength={256} value={accountForm.password} onChange={(event) => setAccountForm({ ...accountForm, password: event.target.value })} /></label>
                 <label>Full name<input required minLength={2} maxLength={120} value={accountForm.displayName} onChange={(event) => setAccountForm({ ...accountForm, displayName: event.target.value })} /></label>
-                {selectedRole === "student" && <label>Department (optional)<select value={accountForm.department} onChange={(event) => setAccountForm({ ...accountForm, department: event.target.value })}><option value="">Select department (optional)</option>{catalog.departments.map((item) => { const name = typeof item === "string" ? item : item.name; return <option key={name}>{name}</option>; })}</select></label>}
+                {(selectedRole === "student" || selectedRole === "dean") && <label>{selectedRole === "dean" ? "Authorized department" : "Department (optional)"}<select required={selectedRole === "dean"} value={accountForm.department} onChange={(event) => setAccountForm({ ...accountForm, department: event.target.value })}><option value="">{selectedRole === "dean" ? "Select authorized department" : "Select department (optional)"}</option>{catalog.departments.map((item) => { const name = typeof item === "string" ? item : item.name; return <option key={name}>{name}</option>; })}</select></label>}
                 {selectedRole === "student" && <>
                   <label>Student number<input required maxLength={64} value={accountForm.studentNumber} onChange={(event) => setAccountForm({ ...accountForm, studentNumber: event.target.value })} /></label>
                   <label>Course (optional)<select value={accountForm.courseId} onChange={(event) => setAccountForm({ ...accountForm, courseId: event.target.value })}><option value="">No course assigned</option>{catalog.courses.map((course) => <option key={course.id} value={course.id}>{course.courseCode} · {course.courseName}</option>)}</select></label>
@@ -2112,7 +2321,7 @@ function AdminDashboard({ role, userId, responses, catalog, apiRequest, refreshC
               <div className="table-wrap"><table><thead><tr><th>NAME</th><th>USERNAME</th><th>{selectedRole === "dean" ? "SCOPE" : "STUDENT DETAILS"}</th><th>STATUS</th><th>ACTION</th></tr></thead>
                 <tbody>{visibleAccounts.map((account) => <tr key={account.id}>
                   <td><strong>{account.display_name}</strong></td><td>{account.username}</td>
-                  <td>{selectedRole === "dean" ? "All departments" : [account.student_number, account.department, account.course, account.year_level].filter(Boolean).join(" · ")}</td>
+                  <td>{selectedRole === "dean" ? account.department || "Department required" : [account.student_number, account.department, account.course, account.year_level].filter(Boolean).join(" · ")}</td>
                   <td><span className={`account-status ${account.active ? "enabled" : "disabled"}`}>{account.active ? "Active" : "Disabled"}</span></td>
                   <td><button type="button" className="row-action" onClick={() => editAccount(account)}>Edit</button><button type="button" className="row-action" onClick={() => toggleAccount(account)}>{account.active ? "Disable" : "Enable"}</button><button type="button" className="row-action" onClick={() => deleteAccount(account)}>Delete</button></td>
                 </tr>)}
@@ -2286,7 +2495,7 @@ function AdminDashboard({ role, userId, responses, catalog, apiRequest, refreshC
                 <label>Starts<input required type="datetime-local" value={periodForm.startsAt} onChange={(event) => setPeriodForm({ ...periodForm, startsAt: event.target.value })} /></label>
                 <label>Ends<input required type="datetime-local" value={periodForm.endsAt} onChange={(event) => setPeriodForm({ ...periodForm, endsAt: event.target.value })} /></label>
                 <button className="primary" disabled={loading}>{editingPeriodId ? "Save period" : "Create period"}</button>
-                {editingPeriodId && <button type="button" className="secondary" onClick={() => { setEditingPeriodId(null); setPeriodForm({ name: "", semester: "", academicYear: "", startsAt: "", endsAt: "" }); }}>Cancel</button>}
+                {editingPeriodId && <button type="button" className="secondary" onClick={() => { setEditingPeriodId(null); setPeriodForm({ name: "", semester: systemSettings.semester, academicYear: systemSettings.academicYear, startsAt: "", endsAt: "" }); }}>Cancel</button>}
               </form>
             </section>
             <section className="flow-card dashboard-panel">
@@ -2295,7 +2504,7 @@ function AdminDashboard({ role, userId, responses, catalog, apiRequest, refreshC
                 <tbody>{catalog.periods.map((period) => <tr key={period.id}>
                   <td><strong>{period.name}</strong><small className="cell-subtitle">{period.semester}</small></td>
                   <td>{period.academic_year || "—"}</td><td>{new Date(period.starts_at).toLocaleDateString()} – {new Date(period.ends_at).toLocaleDateString()}</td>
-                  <td><span className={`account-status ${period.status === "open" ? "enabled" : "disabled"}`}>{period.status}</span></td>
+                  <td><span className={`status-pill ${getEvaluationStatus(period) === "Completed" ? "muted" : getEvaluationStatus(period) === "Ongoing" ? "ongoing" : ""}`}>{getEvaluationStatus(period)}</span></td>
                   <td>{period.name !== "Legacy data" && <><button type="button" className="row-action" onClick={() => editPeriod(period)}>Edit</button><button type="button" className="row-action" disabled={Date.parse(period.ends_at) < Date.now() && period.status === "closed"} onClick={() => togglePeriod(period)}>{period.status === "open" ? "Close" : "Open"}</button></>}</td>
                 </tr>)}
                 {!catalog.periods.length && <tr><td colSpan="5">No evaluation periods have been set.</td></tr>}</tbody>

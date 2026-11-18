@@ -2,6 +2,6 @@
   "name": "evaluation-system-php-api",
   "private": true,
   "scripts": {
-    "build": "php -l api/index.php && php -l api/config.php && php -l tools/create-admin.php && php -l tools/migrate-catalog.php && php -l tools/migrate-relationships.php"
+    "build": "php -l api/index.php && php -l api/config.php && php -l tools/create-admin.php && php -l tools/migrate-catalog.php && php -l tools/migrate-relationships.php && php -l tools/migrate-evaluation-additions.php"
   }
 }
